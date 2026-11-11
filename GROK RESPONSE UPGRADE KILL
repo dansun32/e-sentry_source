@@ -1,0 +1,22 @@
+The real systemd-netmon is built, and the tarball is on your machine at `~/.grok_exports/systemd-netmon.tgz`. All 44 offline tests pass on Python 3.10. My computer has no systemd, though, so the live stop, kill, disable and mask calls have only been run in dry-run mode. Your machine is their first real test.
+
+What's in it:
+- **Live data.** The page polls the backend for real `systemctl` unit state and traffic counters, and reads raw and packet sockets from `/proc/net`, mapped to their PID and unit. Pause, refresh interval, filter and reset all still work, and the PAUSE button bug is fixed.
+- **Actions** on every row: stop, start, restart, kill (TERM or KILL), disable or enable, and mask or unmask, with an optional `--now`. There's also kill-by-PID for socket processes. Each one opens a confirm dialog showing the exact command it will run.
+- **Safety.** It only listens on localhost and you open it with a one-off login URL. Critical units such as journald, dbus, NetworkManager, `piavpn`, ufw and netfilter-persistent are locked until you type the unit name. Every attempt is written to an audit log, and there are `--dry-run` and `--read-only` modes.
+- **No CDN.** Everything it needs is bundled, so your DROP-by-default firewall won't break the page as long as loopback traffic is allowed.
+- **Terminal UI** with `--tui`, kept optional the way you like.
+
+To try it, start safe and work up:
+```
+mkdir -p ~/systemd-netmon
+tar -xzf ~/.grok_exports/systemd-netmon.tgz -C ~/systemd-netmon --strip-components=1
+cd ~/systemd-netmon
+python3 netmon.py --read-only
+sudo python3 netmon.py --dry-run
+sudo python3 netmon.py
+sudo python3 netmon.py --tui
+```
+Open the exact `http://127.0.0.1:8787/?k=…` link it prints.
+
+Two limits to know about. Traffic rates only appear for units with `IPAccounting=yes`; every other unit shows n/a, and the row menu can turn it on for the current boot. The kernel doesn't give packet counts for raw sockets, so that panel shows drops and buffer use instead. The README covers the polkit option (instead of sudo) and running it as a service.

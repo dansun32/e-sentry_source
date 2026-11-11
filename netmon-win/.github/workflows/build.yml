@@ -1,0 +1,41 @@
+name: build-netmon-win
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build, test and package (dotnet test, ctest, pytest, PyInstaller)
+        shell: pwsh
+        run: ./build.ps1 -Package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netmon-win
+          path: dist/netmon-win.zip
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: netmon-win
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" netmon-win.zip --repo "$GITHUB_REPOSITORY" --title "netmon-win $GITHUB_REF_NAME" --notes "Read-only Windows port of systemd-netmon. Unsigned build; see README."

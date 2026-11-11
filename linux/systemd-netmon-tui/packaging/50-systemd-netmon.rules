@@ -1,0 +1,12 @@
+// For distributions with polkit >= 0.106 (JavaScript rules), e.g. Mint 22 / Ubuntu 24.04.
+// NOT used by Mint 21.3 (polkit 0.105 -> use the .pkla file instead).
+// Install: sudo cp 50-systemd-netmon.rules /etc/polkit-1/rules.d/
+polkit.addRule(function (action, subject) {
+    var ids = ["org.freedesktop.systemd1.manage-units",
+               "org.freedesktop.systemd1.manage-unit-files",
+               "org.freedesktop.systemd1.set-unit-properties",
+               "org.freedesktop.systemd1.reload-daemon"];
+    if (ids.indexOf(action.id) >= 0 && subject.user == "dan" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

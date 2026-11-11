@@ -1,0 +1,13 @@
+# Mint 21.x / Ubuntu 22.04 ship polkit 0.105, which uses .pkla files (NOT JavaScript .rules).
+# Install: sudo cp 50-systemd-netmon.pkla /etc/polkit-1/localauthority/50-local.d/
+# Effect: user "dan", in an ACTIVE local session, may manage units / unit files / unit
+# properties WITHOUT a password. That is exactly what lets `python3 netmon.py` (no sudo) run
+# stop/start/kill/enable/disable/mask/set-property.  Any process running as dan gets the same
+# power, so only install this if you accept that trade-off. Remove the file to revoke.
+# Note: polkit does not cover killing other users' PIDs (kill(2)); that still needs root.
+[systemd-netmon: manage systemd units]
+Identity=unix-user:dan
+Action=org.freedesktop.systemd1.manage-units;org.freedesktop.systemd1.manage-unit-files;org.freedesktop.systemd1.set-unit-properties;org.freedesktop.systemd1.reload-daemon
+ResultAny=no
+ResultInactive=no
+ResultActive=yes

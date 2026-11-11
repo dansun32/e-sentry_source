@@ -1,0 +1,7 @@
+Windows Key + X
+
+Terminal (Admin)
+
+winget install -e --id Python.Python.3.12
+
+powershell -ExecutionPolicy Bypass -File .\Start-NetmonWin.ps1

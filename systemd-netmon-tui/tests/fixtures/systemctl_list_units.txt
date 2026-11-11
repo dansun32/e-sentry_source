@@ -1,0 +1,5 @@
+accounts-daemon.service                 loaded    active   running Accounts Service
+avahi-daemon.service                    masked    inactive dead    avahi-daemon.service
+cups.service                            loaded    active   running CUPS Scheduler
+foo.service                             not-found inactive dead    foo.service
+ssh.service                             loaded    active   running OpenBSD Secure Shell server

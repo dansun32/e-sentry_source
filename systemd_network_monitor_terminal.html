@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>systemd-netmon - Terminal Network Monitor</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap');
+
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #090d16;
+            color: #d1d5db;
+        }
+
+        /* Custom Scrollbar for Terminal aesthetic */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #334155;
+        }
+
+        /* Scanline Overlay Effect */
+        .scanline-overlay {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0, 0, 0, 0.25) 50%,
+                rgba(0, 0, 0, 0.25)
+            );
+            background-size: 100% 4px;
+            pointer-events: none;
+        }
+
+        .glow-green {
+            text-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+        }
+        .glow-cyan {
+            text-shadow: 0 0 8px rgba(6, 182, 212, 0.6);
+        }
+        .box-glow {
+            box-shadow: 0 0 15px rgba(6, 182, 212, 0.08);
+        }
+
+        /* Custom pulse for terminal status */
+        @keyframes subtle-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .animate-subtle {
+            animation: subtle-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden select-none bg-[#090d16] text-slate-300">
+
+    <!-- Retro CRT Scanline Overlay -->
+    <div class="scanline-overlay absolute inset-0 z-50 opacity-40"></div>
+
+    <!-- Header Navigation Bar -->
+    <header class="bg-[#0f172a] border-b border-slate-800 px-4 py-2 flex flex-wrap items-center justify-between text-xs gap-2">
+        <div class="flex items-center space-x-3">
+            <span class="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 font-bold py-0.5 rounded flex items-center gap-1.5 glow-cyan">
+                <i data-lucide="terminal" class="w-3.5 h-3.5"></i> systemd-netmon v1.4.0
+            </span>
+            <span class="text-slate-500">|</span>
+            <span class="text-slate-400 flex items-center gap-1">
+                <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-subtle" id="status-dot"></span>
+                <span id="status-text" class="text-emerald-400 font-medium">LIVE D-BUS POLLING</span>
+            </span>
+            <span class="text-slate-600 hidden md:inline">•</span>
+            <span class="text-slate-400 hidden md:inline">Mint 21.3 / Linux 6.5.0-35-generic</span>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex items-center space-x-3 text-xs">
+            <!-- Filter Input -->
+            <div class="relative flex items-center">
+                <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2 text-slate-500"></i>
+                <input type="text" id="search-input" placeholder="Filter units... [ / ]" 
+                    class="bg-[#182235] text-slate-200 text-xs pl-7 pr-3 py-1 rounded border border-slate-700 focus:outline-none focus:border-cyan-500 w-36 sm:w-48 transition-all">
+            </div>
+
+            <!-- Pause Button -->
+            <button id="btn-pause" onclick="togglePause()" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 flex items-center gap-1">
+                <i data-lucide="pause" class="w-3.5 h-3.5" id="pause-icon"></i>
+                <span id="pause-text">PAUSE</span>
+            </button>
+
+            <!-- Refresh Interval Dropdown -->
+            <div class="flex items-center gap-1 text-slate-400 bg-slate-800/80 px-2 py-1 rounded border border-slate-700">
+                <i data-lucide="clock" class="w-3.5 h-3.5 text-slate-400"></i>
+                <select id="rate-select" onchange="changeInterval(this.value)" class="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                    <option value="500" class="bg-slate-900">500ms</option>
+                    <option value="1000" selected class="bg-slate-900">1000ms</option>
+                    <option value="2000" class="bg-slate-900">2000ms</option>
+                </select>
+            </div>
+
+            <!-- D-Bus Info Drawer Toggle -->
+            <button onclick="toggleDrawer()" class="px-2.5 py-1 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-400 border border-cyan-700/50 rounded flex items-center gap-1 font-semibold transition-colors">
+                <i data-lucide="code-2" class="w-3.5 h-3.5"></i>
+                <span>DBUS INFO</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Global Aggregated Bandwidth Summary Bar -->
+    <div class="bg-[#0b1329] border-b border-slate-800/80 px-4 py-2 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Systemd Total Ingress</span>
+            <span id="total-ingress" class="text-emerald-400 font-bold text-sm glow-green">0.00 KB/s</span>
+        </div>
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Systemd Total Egress</span>
+            <span id="total-egress" class="text-cyan-400 font-bold text-sm glow-cyan">0.00 KB/s</span>
+        </div>
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Active Monitored Units</span>
+            <span id="active-units-count" class="text-slate-200 font-bold text-sm">0 / 0</span>
+        </div>
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Raw Sockets Bypass</span>
+            <span id="raw-sockets-count" class="text-amber-400 font-bold text-sm">0 sockets active</span>
+        </div>
+    </div>
+
+    <!-- Main Content Area split into Top and Bottom panels -->
+    <main class="flex-1 flex flex-col p-3 gap-3 overflow-hidden">
+        
+        <!-- TOP SECTION: SYSTEMD NETWORK SERVICES -->
+        <section class="flex-1 min-h-[50%] bg-[#0f172a]/90 border border-slate-800 rounded-lg flex flex-col overflow-hidden box-glow relative">
+            <div class="bg-slate-900/80 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-xs">
+                <div class="flex items-center gap-2 font-bold text-cyan-400">
+                    <i data-lucide="layers" class="w-4 h-4 text-cyan-400"></i>
+                    <span>SYSTEMD NETWORK SERVICES (SORTED TOP-DOWN BY THROUGHPUT)</span>
+                </div>
+                <div class="text-[11px] text-slate-500">
+                    Targeting <code class="text-slate-400 bg-slate-800 px-1 py-0.5 rounded">IPAccounting=yes</code> via D-Bus
+                </div>
+            </div>
+
+            <!-- Services Table Header -->
+            <div class="grid grid-cols-12 bg-slate-900/40 text-[11px] font-semibold text-slate-400 px-3 py-1.5 border-b border-slate-800/60 uppercase">
+                <div class="col-span-4 sm:col-span-3 flex items-center gap-1">
+                    <span>Service Unit Name</span>
+                </div>
+                <div class="col-span-3 sm:col-span-2 text-right">Throughput</div>
+                <div class="col-span-3 sm:col-span-2 text-right">In / Out Rate</div>
+                <div class="hidden sm:block sm:col-span-3 px-3">Traffic Sparkline (60s)</div>
+                <div class="col-span-2 sm:col-span-2 text-right">Total Data</div>
+            </div>
+
+            <!-- Services Dynamic List -->
+            <div id="services-list" class="flex-1 overflow-y-auto font-mono text-xs divide-y divide-slate-800/40">
+                <!-- Dynamic Content Populated via JavaScript -->
+            </div>
+        </section>
+
+        <!-- BOTTOM SECTION: RAW / UNGOVERNED SOCKETS -->
+        <section class="h-48 sm:h-56 bg-[#0f172a]/90 border border-slate-800 rounded-lg flex flex-col overflow-hidden box-glow">
+            <div class="bg-slate-900/80 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-xs">
+                <div class="flex items-center gap-2 font-bold text-amber-400">
+                    <i data-lucide="shield-alert" class="w-4 h-4 text-amber-400"></i>
+                    <span>RAW / PACKET SOCKETS PANEL (BYPASSING /etc/hosts.deny)</span>
+                </div>
+                <div class="text-[11px] text-slate-400 bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded">
+                    Source: <code class="text-amber-300">/proc/net/raw</code> & <code class="text-amber-300">/proc/net/packet</code>
+                </div>
+            </div>
+
+            <!-- Raw Sockets Table Header -->
+            <div class="grid grid-cols-12 bg-slate-900/40 text-[11px] font-semibold text-slate-400 px-3 py-1.5 border-b border-slate-800/60 uppercase">
+                <div class="col-span-2 sm:col-span-1">Inode</div>
+                <div class="col-span-3 sm:col-span-3">Process Name</div>
+                <div class="col-span-2 sm:col-span-1 text-center">PID</div>
+                <div class="col-span-2 sm:col-span-2">Protocol / Type</div>
+                <div class="col-span-3 sm:col-span-2 text-right">Packet Rate</div>
+                <div class="hidden sm:block sm:col-span-3 text-right">Cumulative Packets</div>
+            </div>
+
+            <!-- Raw Sockets Dynamic List -->
+            <div id="raw-sockets-list" class="flex-1 overflow-y-auto font-mono text-xs divide-y divide-slate-800/40">
+                <!-- Dynamic Content Populated via JavaScript -->
+            </div>
+        </section>
+    </main>
+
+    <!-- Bottom Keyboard Shortcut Bar -->
+    <footer class="bg-[#0f172a] border-t border-slate-800 px-4 py-1.5 text-[11px] flex flex-wrap justify-between items-center text-slate-400 font-mono">
+        <div class="flex items-center space-x-4">
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">Space</kbd> Pause</span>
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">/</kbd> Filter</span>
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">R</kbd> Reset Stats</span>
+        </div>
+        <div class="text-slate-500">
+            D-Bus: <span class="text-cyan-400">org.freedesktop.systemd1</span>
+        </div>
+    </footer>
+
+    <!-- SLIDE-OVER DRAWER FOR DBUS & SYSTEMD ACCOUNTS DOCS -->
+    <div id="dbus-drawer" class="fixed inset-y-0 right-0 w-full max-w-xl bg-slate-900 border-l border-cyan-900/50 shadow-2xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col text-xs">
+        <div class="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+            <div class="flex items-center space-x-2 text-cyan-400 font-bold">
+                <i data-lucide="cpu" class="w-5 h-5"></i>
+                <span class="text-sm">systemd D-Bus & IPAccounting Reference</span>
+            </div>
+            <button onclick="toggleDrawer()" class="text-slate-400 hover:text-white p-1">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <div class="flex-1 overflow-y-auto p-5 space-y-4 text-slate-300 leading-relaxed font-sans">
+            <div>
+                <h3 class="text-sm font-bold text-cyan-400 font-mono mb-1">1. Querying Systemd Units via D-Bus</h3>
+                <p class="text-xs text-slate-400 mb-2">Systemd exposes accounting metrics over the system D-Bus at object path <code class="text-emerald-300 font-mono">/org/freedesktop/systemd1</code>.</p>
+                <div class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                    <pre><span class="text-slate-500"># Example using gdbus CLI tool:</span>
+gdbus call --system \
+  --dest org.freedesktop.systemd1 \
+  --object-path /org/freedesktop/systemd1/unit/ssh_2eservice \
+  --method org.freedesktop.DBus.Properties.Get \
+  "org.freedesktop.systemd1.Service" "IPIngressBytes"</pre>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-bold text-cyan-400 font-mono mb-1">2. Target Properties</h3>
+                <ul class="list-disc pl-5 space-y-1 text-xs text-slate-300">
+                    <li><code class="text-emerald-400 font-mono">IPIngressBytes</code> (uint64): Total inbound byte counter.</li>
+                    <li><code class="text-cyan-400 font-mono">IPEgressBytes</code> (uint64): Total outbound byte counter.</li>
+                    <li><code class="text-emerald-400 font-mono">IPIngressPackets</code> / <code class="text-cyan-400 font-mono">IPEgressPackets</code>: Packet counter metrics.</li>
+                </ul>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-bold text-cyan-400 font-mono mb-1">3. Python D-Bus Snippet</h3>
+                <div class="bg-slate-950 p-3 rounded border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                    <pre><span class="text-purple-400">import</span> dbus
+
+bus = dbus.SystemBus()
+systemd = bus.get_object(<span class="text-emerald-300">'org.freedesktop.systemd1'</span>, 
+                         <span class="text-emerald-300">'/org/freedesktop/systemd1'</span>)
+manager = dbus.Interface(systemd, <span class="text-emerald-300">'org.freedesktop.systemd1.Manager'</span>)
+
+<span class="text-slate-500"># Get unit object path</span>
+unit_path = manager.GetUnit(<span class="text-emerald-300">'ssh.service'</span>)
+unit_obj = bus.get_object(<span class="text-emerald-300">'org.freedesktop.systemd1'</span>, unit_path)
+props = dbus.Interface(unit_obj, <span class="text-emerald-300">'org.freedesktop.DBus.Properties'</span>)
+
+ingress = props.Get(<span class="text-emerald-300">'org.freedesktop.systemd1.Service'</span>, <span class="text-emerald-300">'IPIngressBytes'</span>)
+egress = props.Get(<span class="text-emerald-300">'org.freedesktop.systemd1.Service'</span>, <span class="text-emerald-300">'IPEgressBytes'</span>)
+print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egress} bytes"</span>)</pre>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-bold text-amber-400 font-mono mb-1">4. Why Raw Sockets Bypass /etc/hosts.deny</h3>
+                <p class="text-xs text-slate-400 leading-normal">
+                    Daemons like <code class="text-amber-300">systemd-networkd</code>, <code class="text-amber-300">dhclient</code>, or <code class="text-amber-300">wpa_supplicant</code> open raw AF_PACKET sockets to manage link-layer traffic or DHCP discovery. Because they interact directly with kernel network devices, they completely bypass application-layer wrappers such as <code class="text-amber-300">/etc/hosts.deny</code> (libwrap).
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script Engine -->
+    <script>
+        // State Management
+        let isPaused = false;
+        let refreshIntervalMs = 1000;
+        let timerId = null;
+        let searchQuery = '';
+
+        // Initial Data Sets (Systemd Services)
+        const servicesData = [
+            { name: 'systemd-resolved.service', ingress: 1450200, egress: 890400, rateKBPS: 42.5, history: [12, 15, 28, 40, 42.5], active: true },
+            { name: 'ssh.service', ingress: 8900400, egress: 14205000, rateKBPS: 128.4, history: [80, 95, 110, 105, 128.4], active: true },
+            { name: 'nginx.service', ingress: 24500000, egress: 189000000, rateKBPS: 310.2, history: [220, 250, 290, 305, 310.2], active: true },
+            { name: 'docker.service', ingress: 1240000, egress: 980000, rateKBPS: 18.2, history: [5, 8, 12, 15, 18.2], active: true },
+            { name: 'systemd-networkd.service', ingress: 450100, egress: 320100, rateKBPS: 8.7, history: [4, 6, 8, 7, 8.7], active: true },
+            { name: 'tailscaled.service', ingress: 5600100, egress: 6100200, rateKBPS: 64.1, history: [30, 45, 50, 58, 64.1], active: true },
+            { name: 'openvpn.service', ingress: 0, egress: 0, rateKBPS: 0.0, history: [0, 0, 0, 0, 0], active: true },
+            { name: 'avahi-daemon.service', ingress: 120400, egress: 89000, rateKBPS: 1.2, history: [1, 1.2, 0.8, 1.1, 1.2], active: true },
+            { name: 'cups.service', ingress: 0, egress: 0, rateKBPS: 0.0, history: [0, 0, 0, 0, 0], active: true }
+        ];
+
+        // Initial Data Sets (Raw Sockets Bypassing hosts.deny)
+        const rawSocketsData = [
+            { inode: '29041', procName: 'systemd-networkd', pid: 482, proto: 'ETH_P_ALL (RAW)', packetRate: 14, totalPackets: 8940 },
+            { inode: '18492', procName: 'dhclient', pid: 912, proto: 'ETH_P_IP (RAW)', packetRate: 2, totalPackets: 1240 },
+            { inode: '34102', procName: 'wpa_supplicant', pid: 744, proto: 'ETH_P_80211_RAW', packetRate: 28, totalPackets: 45012 },
+            { inode: '51209', procName: 'tcpdump', pid: 4102, proto: 'ETH_P_ALL (PROMISC)', packetRate: 184, totalPackets: 192004 }
+        ];
+
+        // Initialize Lucide Icons
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            renderAll();
+            startLoop();
+
+            // Keyboard shortcut listener
+            document.addEventListener('keydown', (e) => {
+                if (e.key === ' ') {
+                    e.preventDefault();
+                    togglePause();
+                } else if (e.key === '/') {
+                    e.preventDefault();
+                    document.getElementById('search-input').focus();
+                } else if (e.key.toLowerCase() === 'r') {
+                    resetStats();
+                }
+            });
+
+            // Search input filter listener
+            document.getElementById('search-input').addEventListener('input', (e) => {
+                searchQuery = e.target.value.toLowerCase();
+                renderServices();
+            });
+        });
+
+        // Loop Runner
+        function startLoop() {
+            if (timerId) clearInterval(timerId);
+            timerId = setInterval(() => {
+                if (!isPaused) {
+                    updateSimulatedData();
+                    renderAll();
+                }
+            }, refreshIntervalMs);
+        }
+
+        // Toggle Pause
+        function togglePause() {
+            isPaused = !isPaused;
+            const btnText = document.getElementById('pause-text');
+            const btnIcon = document.getElementById('pause-icon');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            if (isPaused) {
+                btnText.textContent = 'RESUME';
+                btnIcon.setAttribute('data-lucide', 'play');
+                statusDot.className = 'inline-block w-2 h-2 rounded-full bg-amber-500';
+                statusText.className = 'text-amber-400 font-medium';
+                statusText.textContent = 'PAUSED';
+            } else {
+                btnText.textContent = 'PAUSED';
+                btnIcon.setAttribute('data-lucide', 'pause');
+                statusDot.className = 'inline-block w-2 h-2 rounded-full bg-emerald-500 animate-subtle';
+                statusText.className = 'text-emerald-400 font-medium';
+                statusText.textContent = 'LIVE D-BUS POLLING';
+            }
+            lucide.createIcons();
+        }
+
+        // Change Refresh Rate
+        function changeInterval(val) {
+            refreshIntervalMs = parseInt(val, 10);
+            startLoop();
+        }
+
+        // Reset Data Counters
+        function resetStats() {
+            servicesData.forEach(s => {
+                s.ingress = 0;
+                s.egress = 0;
+                s.rateKBPS = 0;
+                s.history = [0, 0, 0, 0, 0];
+            });
+            rawSocketsData.forEach(r => {
+                r.totalPackets = 0;
+                r.packetRate = 0;
+            });
+            renderAll();
+        }
+
+        // Simulate Dynamic Network Metrics
+        function updateSimulatedData() {
+            servicesData.forEach(service => {
+                if (service.name === 'cups.service' || service.name === 'openvpn.service') {
+                    // Occasional low spikes
+                    if (Math.random() > 0.8) {
+                        const deltaIn = Math.floor(Math.random() * 2000);
+                        const deltaOut = Math.floor(Math.random() * 1500);
+                        service.ingress += deltaIn;
+                        service.egress += deltaOut;
+                        service.rateKBPS = parseFloat(((deltaIn + deltaOut) / 1024).toFixed(2));
+                    } else {
+                        service.rateKBPS = 0.0;
+                    }
+                } else {
+                    // Active traffic simulation
+                    const factor = service.name.includes('nginx') ? 40 : (service.name.includes('ssh') ? 15 : 5);
+                    const deltaIn = Math.floor((Math.random() * 15 + 2) * 1024 * factor);
+                    const deltaOut = Math.floor((Math.random() * 20 + 5) * 1024 * factor);
+                    
+                    service.ingress += deltaIn;
+                    service.egress += deltaOut;
+                    
+                    const currentKBPS = parseFloat(((deltaIn + deltaOut) / 1024 / (refreshIntervalMs / 1000)).toFixed(2));
+                    service.rateKBPS = currentKBPS;
+
+                    // Push sparkline history
+                    service.history.push(currentKBPS);
+                    if (service.history.length > 10) service.history.shift();
+                }
+            });
+
+            // Update Raw Sockets Data
+            rawSocketsData.forEach(sock => {
+                const packetDelta = Math.floor(Math.random() * 10 * (sock.procName === 'tcpdump' ? 12 : 1));
+                sock.packetRate = packetDelta;
+                sock.totalPackets += packetDelta;
+            });
+        }
+
+        // Render All UI Elements
+        function renderAll() {
+            renderServices();
+            renderRawSockets();
+            renderHeaderSummary();
+        }
+
+        // Render Top Section: Systemd Network Services (Sorted Top-Down by usage)
+        function renderServices() {
+            const container = document.getElementById('services-list');
+            
+            // Filter and Sort Top-Down by Throughput (rateKBPS)
+            const filtered = servicesData.filter(s => s.name.toLowerCase().includes(searchQuery));
+            filtered.sort((a, b) => b.rateKBPS - a.rateKBPS);
+
+            let html = '';
+            filtered.forEach((service, index) => {
+                const totalBytesFormatted = formatBytes(service.ingress + service.egress);
+                const ingressRate = (service.rateKBPS * 0.4).toFixed(1);
+                const egressRate = (service.rateKBPS * 0.6).toFixed(1);
+                
+                // Color formatting based on activity
+                const isHighUsage = service.rateKBPS > 100;
+                const isMediumUsage = service.rateKBPS > 10 && service.rateKBPS <= 100;
+                const rateColorClass = isHighUsage ? 'text-emerald-400 font-bold glow-green' : (isMediumUsage ? 'text-cyan-400 font-semibold' : 'text-slate-400');
+                
+                // Build Mini Bar / Sparkline (Text-based ASCII blocks)
+                const sparkline = generateSparkline(service.history);
+
+                html += `
+                    <div class="grid grid-cols-12 px-3 py-2 items-center hover:bg-slate-800/40 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20' : ''}">
+                        <!-- Service Name -->
+                        <div class="col-span-4 sm:col-span-3 flex items-center space-x-2 truncate">
+                            <span class="w-1.5 h-1.5 rounded-full ${service.rateKBPS > 0 ? 'bg-emerald-400' : 'bg-slate-600'}"></span>
+                            <span class="text-slate-200 truncate font-semibold">${service.name}</span>
+                        </div>
+
+                        <!-- Throughput in Square Brackets [KBPS] -->
+                        <div class="col-span-3 sm:col-span-2 text-right">
+                            <span class="${rateColorClass}">[${service.rateKBPS.toFixed(2)} KBPS]</span>
+                        </div>
+
+                        <!-- In / Out Rate breakdown -->
+                        <div class="col-span-3 sm:col-span-2 text-right text-[11px] text-slate-400">
+                            <span class="text-emerald-400">↓${ingressRate}</span> / <span class="text-cyan-400">↑${egressRate}</span>
+                        </div>
+
+                        <!-- Sparkline Visual -->
+                        <div class="hidden sm:block sm:col-span-3 px-3">
+                            <span class="text-cyan-400/80 font-bold text-xs tracking-tighter">${sparkline}</span>
+                        </div>
+
+                        <!-- Total Cumulative Data -->
+                        <div class="col-span-2 sm:col-span-2 text-right text-slate-400 text-[11px]">
+                            ${totalBytesFormatted}
+                        </div>
+                    </div>
+                `;
+            });
+
+            if (filtered.length === 0) {
+                html = `<div class="p-4 text-center text-slate-500">No matching systemd units found.</div>`;
+            }
+
+            container.innerHTML = html;
+        }
+
+        // Render Bottom Section: Raw Sockets Panel
+        function renderRawSockets() {
+            const container = document.getElementById('raw-sockets-list');
+            let html = '';
+
+            rawSocketsData.forEach((sock, index) => {
+                html += `
+                    <div class="grid grid-cols-12 px-3 py-1.5 items-center hover:bg-slate-800/40 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20' : ''}">
+                        <!-- Inode -->
+                        <div class="col-span-2 sm:col-span-1 text-slate-500 font-mono text-[11px]">
+                            #${sock.inode}
+                        </div>
+
+                        <!-- Process Name -->
+                        <div class="col-span-3 sm:col-span-3 font-semibold text-amber-300 flex items-center gap-1.5 truncate">
+                            <i data-lucide="zap" class="w-3 h-3 text-amber-400 shrink-0"></i>
+                            <span class="truncate">${sock.procName}</span>
+                        </div>
+
+                        <!-- PID -->
+                        <div class="col-span-2 sm:col-span-1 text-center text-slate-400">
+                            ${sock.pid}
+                        </div>
+
+                        <!-- Protocol -->
+                        <div class="col-span-2 sm:col-span-2 text-slate-400 text-[11px]">
+                            <span class="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700">${sock.proto}</span>
+                        </div>
+
+                        <!-- Packet Rate -->
+                        <div class="col-span-3 sm:col-span-2 text-right text-amber-400 font-semibold">
+                            ${sock.packetRate} pkts/s
+                        </div>
+
+                        <!-- Total Packets -->
+                        <div class="hidden sm:block sm:col-span-3 text-right text-slate-400 text-[11px]">
+                            ${sock.totalPackets.toLocaleString()} pkts
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        // Global Header Metrics Summary
+        function renderHeaderSummary() {
+            const totalIngressBytes = servicesData.reduce((acc, curr) => acc + curr.ingress, 0);
+            const totalEgressBytes = servicesData.reduce((acc, curr) => acc + curr.egress, 0);
+            const totalRateKBPS = servicesData.reduce((acc, curr) => acc + curr.rateKBPS, 0);
+
+            document.getElementById('total-ingress').textContent = `${(totalRateKBPS * 0.45).toFixed(2)} KB/s`;
+            document.getElementById('total-egress').textContent = `${(totalRateKBPS * 0.55).toFixed(2)} KB/s`;
+            document.getElementById('active-units-count').textContent = `${servicesData.length} active`;
+            document.getElementById('raw-sockets-count').textContent = `${rawSocketsData.length} sockets tracked`;
+        }
+
+        // Text-based Sparkline Generator
+        function generateSparkline(history) {
+            const blocks = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            const max = Math.max(...history, 1);
+            return history.map(val => {
+                const idx = Math.min(Math.floor((val / max) * (blocks.length - 1)), blocks.length - 1);
+                return blocks[idx];
+            }).join('');
+        }
+
+        // Byte Formatter
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Drawer Controls
+        function toggleDrawer() {
+            const drawer = document.getElementById('dbus-drawer');
+            if (drawer.classList.contains('translate-x-full')) {
+                drawer.classList.remove('translate-x-full');
+            } else {
+                drawer.classList.add('translate-x-full');
+            }
+        }
+    </script>
+</body>
+</html>

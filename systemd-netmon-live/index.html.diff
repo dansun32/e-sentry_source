@@ -1,0 +1,354 @@
+--- original.html	2026-11-11 17:18:15.432936343 +0000
++++ index.html	2026-11-11 17:19:47.131196473 +0000
+@@ -83,7 +83,7 @@
+                 <span id="status-text" class="text-emerald-400 font-medium">LIVE D-BUS POLLING</span>
+             </span>
+             <span class="text-slate-600 hidden md:inline">•</span>
+-            <span class="text-slate-400 hidden md:inline">Mint 21.3 / Linux 6.5.0-35-generic</span>
++            <span id="os-label" class="text-slate-400 hidden md:inline">Mint 21.3 / Linux 6.5.0-35-generic</span>
+         </div>
+ 
+         <!-- Controls -->
+@@ -189,8 +189,8 @@
+                 <div class="col-span-3 sm:col-span-3">Process Name</div>
+                 <div class="col-span-2 sm:col-span-1 text-center">PID</div>
+                 <div class="col-span-2 sm:col-span-2">Protocol / Type</div>
+-                <div class="col-span-3 sm:col-span-2 text-right">Packet Rate</div>
+-                <div class="hidden sm:block sm:col-span-3 text-right">Cumulative Packets</div>
++                <div class="col-span-3 sm:col-span-2 text-right" title="No per-socket packet counters exist for raw/packet sockets; showing the kernel drop counter rate">Drop Rate</div>
++                <div class="hidden sm:block sm:col-span-3 text-right" title="raw/raw6: cumulative kernel drops; packet: receive buffer bytes (Rmem)">Drops / Rmem</div>
+             </div>
+ 
+             <!-- Raw Sockets Dynamic List -->
+@@ -284,31 +284,26 @@
+         let timerId = null;
+         let searchQuery = '';
+ 
+-        // Initial Data Sets (Systemd Services)
+-        const servicesData = [
+-            { name: 'systemd-resolved.service', ingress: 1450200, egress: 890400, rateKBPS: 42.5, history: [12, 15, 28, 40, 42.5], active: true },
+-            { name: 'ssh.service', ingress: 8900400, egress: 14205000, rateKBPS: 128.4, history: [80, 95, 110, 105, 128.4], active: true },
+-            { name: 'nginx.service', ingress: 24500000, egress: 189000000, rateKBPS: 310.2, history: [220, 250, 290, 305, 310.2], active: true },
+-            { name: 'docker.service', ingress: 1240000, egress: 980000, rateKBPS: 18.2, history: [5, 8, 12, 15, 18.2], active: true },
+-            { name: 'systemd-networkd.service', ingress: 450100, egress: 320100, rateKBPS: 8.7, history: [4, 6, 8, 7, 8.7], active: true },
+-            { name: 'tailscaled.service', ingress: 5600100, egress: 6100200, rateKBPS: 64.1, history: [30, 45, 50, 58, 64.1], active: true },
+-            { name: 'openvpn.service', ingress: 0, egress: 0, rateKBPS: 0.0, history: [0, 0, 0, 0, 0], active: true },
+-            { name: 'avahi-daemon.service', ingress: 120400, egress: 89000, rateKBPS: 1.2, history: [1, 1.2, 0.8, 1.1, 1.2], active: true },
+-            { name: 'cups.service', ingress: 0, egress: 0, rateKBPS: 0.0, history: [0, 0, 0, 0, 0], active: true }
+-        ];
+-
+-        // Initial Data Sets (Raw Sockets Bypassing hosts.deny)
+-        const rawSocketsData = [
+-            { inode: '29041', procName: 'systemd-networkd', pid: 482, proto: 'ETH_P_ALL (RAW)', packetRate: 14, totalPackets: 8940 },
+-            { inode: '18492', procName: 'dhclient', pid: 912, proto: 'ETH_P_IP (RAW)', packetRate: 2, totalPackets: 1240 },
+-            { inode: '34102', procName: 'wpa_supplicant', pid: 744, proto: 'ETH_P_80211_RAW', packetRate: 28, totalPackets: 45012 },
+-            { inode: '51209', procName: 'tcpdump', pid: 4102, proto: 'ETH_P_ALL (PROMISC)', packetRate: 184, totalPackets: 192004 }
+-        ];
++        // Live Data Sets (filled from the local helper at /api/data)
++        let servicesData = [];
++        let rawSocketsData = [];
++        let liveTotals = { ingressRate: 0, egressRate: 0, running: 0, monitored: 0, sockets: 0 };
++        let baseline = {};      // client-side "Reset Stats" baselines: unit -> bytes, inode -> drops
++        let lastDrops = {};     // inode -> {drops, t} for drop-rate deltas
++        let fetchInFlight = false;
++        let helperOk = true;
++
++        // HTML-escape everything inserted via innerHTML (process names are attacker-controlled)
++        function esc(v) {
++            return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
++        }
++        function createIcons() { if (window.lucide) lucide.createIcons(); }  // page still works if the CDN is blocked
+ 
+         // Initialize Lucide Icons
+         document.addEventListener('DOMContentLoaded', () => {
+-            lucide.createIcons();
++            createIcons();
+             renderAll();
++            fetchData();
+             startLoop();
+ 
+             // Keyboard shortcut listener
+@@ -336,8 +331,7 @@
+             if (timerId) clearInterval(timerId);
+             timerId = setInterval(() => {
+                 if (!isPaused) {
+-                    updateSimulatedData();
+-                    renderAll();
++                    fetchData();
+                 }
+             }, refreshIntervalMs);
+         }
+@@ -357,13 +351,14 @@
+                 statusText.className = 'text-amber-400 font-medium';
+                 statusText.textContent = 'PAUSED';
+             } else {
+-                btnText.textContent = 'PAUSED';
++                btnText.textContent = 'PAUSE';
+                 btnIcon.setAttribute('data-lucide', 'pause');
+                 statusDot.className = 'inline-block w-2 h-2 rounded-full bg-emerald-500 animate-subtle';
+                 statusText.className = 'text-emerald-400 font-medium';
+                 statusText.textContent = 'LIVE D-BUS POLLING';
++                setHelperStatus(helperOk);
+             }
+-            lucide.createIcons();
++            createIcons();
+         }
+ 
+         // Change Refresh Rate
+@@ -372,59 +367,93 @@
+             startLoop();
+         }
+ 
+-        // Reset Data Counters
++        // Reset Data Counters (display baseline only; kernel counters are untouched)
+         function resetStats() {
+             servicesData.forEach(s => {
++                baseline['u:' + s.name] = { ingress: s.rawIngress || 0, egress: s.rawEgress || 0 };
+                 s.ingress = 0;
+                 s.egress = 0;
+                 s.rateKBPS = 0;
+                 s.history = [0, 0, 0, 0, 0];
+             });
+             rawSocketsData.forEach(r => {
+-                r.totalPackets = 0;
+-                r.packetRate = 0;
++                if (r.drops != null) baseline['i:' + r.inode] = r.rawDrops;
++                if (r.drops != null) r.drops = 0;
++                r.dropRate = 0;
+             });
+             renderAll();
+         }
+ 
+-        // Simulate Dynamic Network Metrics
+-        function updateSimulatedData() {
+-            servicesData.forEach(service => {
+-                if (service.name === 'cups.service' || service.name === 'openvpn.service') {
+-                    // Occasional low spikes
+-                    if (Math.random() > 0.8) {
+-                        const deltaIn = Math.floor(Math.random() * 2000);
+-                        const deltaOut = Math.floor(Math.random() * 1500);
+-                        service.ingress += deltaIn;
+-                        service.egress += deltaOut;
+-                        service.rateKBPS = parseFloat(((deltaIn + deltaOut) / 1024).toFixed(2));
+-                    } else {
+-                        service.rateKBPS = 0.0;
+-                    }
+-                } else {
+-                    // Active traffic simulation
+-                    const factor = service.name.includes('nginx') ? 40 : (service.name.includes('ssh') ? 15 : 5);
+-                    const deltaIn = Math.floor((Math.random() * 15 + 2) * 1024 * factor);
+-                    const deltaOut = Math.floor((Math.random() * 20 + 5) * 1024 * factor);
+-                    
+-                    service.ingress += deltaIn;
+-                    service.egress += deltaOut;
+-                    
+-                    const currentKBPS = parseFloat(((deltaIn + deltaOut) / 1024 / (refreshIntervalMs / 1000)).toFixed(2));
+-                    service.rateKBPS = currentKBPS;
+-
+-                    // Push sparkline history
+-                    service.history.push(currentKBPS);
+-                    if (service.history.length > 10) service.history.shift();
+-                }
+-            });
++        // Poll the local read-only helper for real data
++        async function fetchData() {
++            if (fetchInFlight) return;
++            fetchInFlight = true;
++            try {
++                const r = await fetch('/api/data', { cache: 'no-store' });
++                if (!r.ok) throw new Error('HTTP ' + r.status);
++                const d = await r.json();
++                if (isPaused) return;  // paused while the request was in flight: keep the frozen view
++                applyData(d);
++                setHelperStatus(true);
++                renderAll();
++            } catch (e) {
++                setHelperStatus(false, String(e.message || e));
++            } finally {
++                fetchInFlight = false;
++            }
++        }
+ 
+-            // Update Raw Sockets Data
+-            rawSocketsData.forEach(sock => {
+-                const packetDelta = Math.floor(Math.random() * 10 * (sock.procName === 'tcpdump' ? 12 : 1));
+-                sock.packetRate = packetDelta;
+-                sock.totalPackets += packetDelta;
++        function applyData(d) {
++            if (d.os) document.getElementById('os-label').textContent = d.os;
++            liveTotals = d.totals || liveTotals;
++            servicesData = (d.services || []).map(s => {
++                const b = baseline['u:' + s.name] || { ingress: 0, egress: 0 };
++                const inK = s.ingressRate == null ? null : s.ingressRate / 1024;
++                const outK = s.egressRate == null ? null : s.egressRate / 1024;
++                return {
++                    name: s.name, monitored: s.monitored, active: s.activeState === 'active',
++                    rawIngress: s.ingress, rawEgress: s.egress,
++                    ingress: s.ingress == null ? null : Math.max(0, s.ingress - b.ingress),
++                    egress: s.egress == null ? null : Math.max(0, s.egress - b.egress),
++                    inKBPS: inK, outKBPS: outK,
++                    rateKBPS: (inK == null && outK == null) ? null : (inK || 0) + (outK || 0),
++                    history: (s.history && s.history.length) ? s.history.slice(-10) : [0, 0, 0, 0, 0]
++                };
++            });
++            const now = Date.now() / 1000;
++            rawSocketsData = (d.sockets || []).map(x => {
++                const prev = lastDrops[x.inode];
++                let dropRate = null;
++                if (x.drops != null && prev && now > prev.t && x.drops >= prev.drops) dropRate = (x.drops - prev.drops) / (now - prev.t);
++                if (x.drops != null) lastDrops[x.inode] = { drops: x.drops, t: now };
++                const b = baseline['i:' + x.inode] || 0;
++                return {
++                    inode: x.inode, procName: x.procName || 'unknown', pid: x.pid == null ? '?' : x.pid,
++                    proto: x.proto + (x.iface ? ' @' + x.iface : ''), kind: x.kind,
++                    rawDrops: x.drops, drops: x.drops == null ? null : Math.max(0, x.drops - b),
++                    rmem: x.rmem, dropRate: dropRate
++                };
+             });
++            helperNote = d.systemd_error || (d.sockets_owner_complete === false ? 'run with sudo to resolve all socket owners' : '');
++        }
++        let helperNote = '';
++
++        function setHelperStatus(ok, msg) {
++            helperOk = ok;
++            if (isPaused) return;
++            const statusDot = document.getElementById('status-dot');
++            const statusText = document.getElementById('status-text');
++            if (ok) {
++                statusDot.className = 'inline-block w-2 h-2 rounded-full bg-emerald-500 animate-subtle';
++                statusText.className = 'text-emerald-400 font-medium';
++                statusText.textContent = 'LIVE D-BUS POLLING';
++                statusText.title = helperNote;
++            } else {
++                statusDot.className = 'inline-block w-2 h-2 rounded-full bg-red-500';
++                statusText.className = 'text-red-400 font-medium';
++                statusText.textContent = 'HELPER UNREACHABLE';
++                statusText.title = msg || '';
++            }
+         }
+ 
+         // Render All UI Elements
+@@ -440,17 +469,18 @@
+             
+             // Filter and Sort Top-Down by Throughput (rateKBPS)
+             const filtered = servicesData.filter(s => s.name.toLowerCase().includes(searchQuery));
+-            filtered.sort((a, b) => b.rateKBPS - a.rateKBPS);
++            filtered.sort((a, b) => (b.rateKBPS || 0) - (a.rateKBPS || 0) || (b.monitored - a.monitored) || a.name.localeCompare(b.name));
+ 
+             let html = '';
+             filtered.forEach((service, index) => {
+-                const totalBytesFormatted = formatBytes(service.ingress + service.egress);
+-                const ingressRate = (service.rateKBPS * 0.4).toFixed(1);
+-                const egressRate = (service.rateKBPS * 0.6).toFixed(1);
++                const totalBytesFormatted = service.monitored ? formatBytes(service.ingress + service.egress) : 'n/a';
++                const ingressRate = service.inKBPS == null ? 'n/a' : service.inKBPS.toFixed(1);
++                const egressRate = service.outKBPS == null ? 'n/a' : service.outKBPS.toFixed(1);
++                const rate = service.rateKBPS || 0;
+                 
+                 // Color formatting based on activity
+-                const isHighUsage = service.rateKBPS > 100;
+-                const isMediumUsage = service.rateKBPS > 10 && service.rateKBPS <= 100;
++                const isHighUsage = rate > 100;
++                const isMediumUsage = rate > 10 && rate <= 100;
+                 const rateColorClass = isHighUsage ? 'text-emerald-400 font-bold glow-green' : (isMediumUsage ? 'text-cyan-400 font-semibold' : 'text-slate-400');
+                 
+                 // Build Mini Bar / Sparkline (Text-based ASCII blocks)
+@@ -460,13 +490,13 @@
+                     <div class="grid grid-cols-12 px-3 py-2 items-center hover:bg-slate-800/40 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20' : ''}">
+                         <!-- Service Name -->
+                         <div class="col-span-4 sm:col-span-3 flex items-center space-x-2 truncate">
+-                            <span class="w-1.5 h-1.5 rounded-full ${service.rateKBPS > 0 ? 'bg-emerald-400' : 'bg-slate-600'}"></span>
+-                            <span class="text-slate-200 truncate font-semibold">${service.name}</span>
++                            <span class="w-1.5 h-1.5 rounded-full ${rate > 0 ? 'bg-emerald-400' : 'bg-slate-600'}"></span>
++                            <span class="text-slate-200 truncate font-semibold" title="${service.monitored ? '' : 'IPAccounting is off for this unit'}">${esc(service.name)}</span>
+                         </div>
+ 
+                         <!-- Throughput in Square Brackets [KBPS] -->
+                         <div class="col-span-3 sm:col-span-2 text-right">
+-                            <span class="${rateColorClass}">[${service.rateKBPS.toFixed(2)} KBPS]</span>
++                            <span class="${rateColorClass}">${service.monitored ? '[' + rate.toFixed(2) + ' KBPS]' : 'n/a'}</span>
+                         </div>
+ 
+                         <!-- In / Out Rate breakdown -->
+@@ -488,7 +518,7 @@
+             });
+ 
+             if (filtered.length === 0) {
+-                html = `<div class="p-4 text-center text-slate-500">No matching systemd units found.</div>`;
++                html = `<div class="p-4 text-center text-slate-500">${helperNote && !servicesData.length ? esc(helperNote) : 'No matching systemd units found.'}</div>`;
+             }
+ 
+             container.innerHTML = html;
+@@ -504,51 +534,48 @@
+                     <div class="grid grid-cols-12 px-3 py-1.5 items-center hover:bg-slate-800/40 transition-colors ${index % 2 === 0 ? 'bg-slate-900/20' : ''}">
+                         <!-- Inode -->
+                         <div class="col-span-2 sm:col-span-1 text-slate-500 font-mono text-[11px]">
+-                            #${sock.inode}
++                            #${esc(sock.inode)}
+                         </div>
+ 
+                         <!-- Process Name -->
+                         <div class="col-span-3 sm:col-span-3 font-semibold text-amber-300 flex items-center gap-1.5 truncate">
+                             <i data-lucide="zap" class="w-3 h-3 text-amber-400 shrink-0"></i>
+-                            <span class="truncate">${sock.procName}</span>
++                            <span class="truncate">${esc(sock.procName)}</span>
+                         </div>
+ 
+                         <!-- PID -->
+                         <div class="col-span-2 sm:col-span-1 text-center text-slate-400">
+-                            ${sock.pid}
++                            ${esc(sock.pid)}
+                         </div>
+ 
+                         <!-- Protocol -->
+                         <div class="col-span-2 sm:col-span-2 text-slate-400 text-[11px]">
+-                            <span class="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700">${sock.proto}</span>
++                            <span class="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700">${esc(sock.proto)}</span>
+                         </div>
+ 
+                         <!-- Packet Rate -->
+                         <div class="col-span-3 sm:col-span-2 text-right text-amber-400 font-semibold">
+-                            ${sock.packetRate} pkts/s
++                            ${sock.dropRate == null ? 'n/a' : sock.dropRate.toFixed(1) + ' drops/s'}
+                         </div>
+ 
+                         <!-- Total Packets -->
+                         <div class="hidden sm:block sm:col-span-3 text-right text-slate-400 text-[11px]">
+-                            ${sock.totalPackets.toLocaleString()} pkts
++                            ${sock.drops != null ? sock.drops.toLocaleString() + ' drops' : (sock.rmem != null ? formatBytes(sock.rmem) + ' rmem' : 'n/a')}
+                         </div>
+                     </div>
+                 `;
+             });
+ 
++            if (!rawSocketsData.length) html = `<div class="p-4 text-center text-slate-500">No raw or packet sockets open.</div>`;
+             container.innerHTML = html;
+-            lucide.createIcons();
++            createIcons();
+         }
+ 
+         // Global Header Metrics Summary
+         function renderHeaderSummary() {
+-            const totalIngressBytes = servicesData.reduce((acc, curr) => acc + curr.ingress, 0);
+-            const totalEgressBytes = servicesData.reduce((acc, curr) => acc + curr.egress, 0);
+-            const totalRateKBPS = servicesData.reduce((acc, curr) => acc + curr.rateKBPS, 0);
+-
+-            document.getElementById('total-ingress').textContent = `${(totalRateKBPS * 0.45).toFixed(2)} KB/s`;
+-            document.getElementById('total-egress').textContent = `${(totalRateKBPS * 0.55).toFixed(2)} KB/s`;
+-            document.getElementById('active-units-count').textContent = `${servicesData.length} active`;
++            document.getElementById('total-ingress').textContent = `${(liveTotals.ingressRate / 1024).toFixed(2)} KB/s`;
++            document.getElementById('total-egress').textContent = `${(liveTotals.egressRate / 1024).toFixed(2)} KB/s`;
++            document.getElementById('active-units-count').textContent = `${liveTotals.monitored} / ${liveTotals.running} active`;
+             document.getElementById('raw-sockets-count').textContent = `${rawSocketsData.length} sockets tracked`;
+         }
+ 
+@@ -564,7 +591,8 @@
+ 
+         // Byte Formatter
+         function formatBytes(bytes) {
+-            if (bytes === 0) return '0 B';
++            if (bytes == null || isNaN(bytes)) return 'n/a';
++            if (bytes <= 0) return '0 B';
+             const k = 1024;
+             const sizes = ['B', 'KB', 'MB', 'GB'];
+             const i = Math.floor(Math.log(bytes) / Math.log(k));

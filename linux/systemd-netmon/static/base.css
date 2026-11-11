@@ -1,0 +1,21 @@
+/* Hand-written styles carried over from the mockup + grid templates (no CDN fonts: uses local fonts). */
+body { font-family: 'JetBrains Mono', 'DejaVu Sans Mono', 'Ubuntu Mono', ui-monospace, monospace; background-color: #090d16; color: #d1d5db; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #334155; }
+.scanline-overlay { background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,.25) 50%, rgba(0,0,0,.25)); background-size: 100% 4px; pointer-events: none; }
+.glow-green { text-shadow: 0 0 8px rgba(34,197,94,.6); }
+.glow-cyan { text-shadow: 0 0 8px rgba(6,182,212,.6); }
+.box-glow { box-shadow: 0 0 15px rgba(6,182,212,.08); }
+@keyframes subtle-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+.animate-subtle { animation: subtle-pulse 2s cubic-bezier(.4,0,.6,1) infinite; }
+.svc-grid { display: grid; gap: .5rem; grid-template-columns: minmax(0,3fr) minmax(0,2.2fr) minmax(0,1.3fr) minmax(0,1.4fr) minmax(0,1.6fr) minmax(0,1fr) 2.2rem; }
+.sock-grid { display: grid; gap: .5rem; grid-template-columns: minmax(0,.9fr) minmax(0,1.6fr) minmax(0,.7fr) minmax(0,2.6fr) minmax(0,.7fr) minmax(0,1.4fr) minmax(0,1.6fr) 2.2rem; }
+@media (max-width: 640px) {
+  .hide-sm { display: none; }
+  .svc-grid { grid-template-columns: minmax(0,3fr) minmax(0,2fr) minmax(0,1.3fr) minmax(0,1.4fr) minmax(0,1fr) 2.2rem; }
+  .sock-grid { grid-template-columns: minmax(0,1fr) minmax(0,2fr) minmax(0,.8fr) minmax(0,2.6fr) minmax(0,.8fr) 2.2rem; }
+}
+.lucide { display: inline-block; vertical-align: middle; }
+pre { font-family: inherit; }

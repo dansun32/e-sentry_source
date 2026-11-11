@@ -1,0 +1,2 @@
+ce0a5a025668b94d04a76917ddcc1ef4c93855d1c9bf5a682537ebdc6e47fea3  helpers/netmon-etw.exe
+054ba0fa5713b7359bd1c6dfbdedf8172e9b09c16260bc4f4eefc12a11856591  helpers/netmon-raw.exe

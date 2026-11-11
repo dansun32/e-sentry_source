@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{CSRF_TOKEN}}">
+    <title>systemd-netmon - Terminal Network Monitor</title>
+    <!-- Fully self-hosted: compiled Tailwind subset + vendored Lucide icons. No CDN requests,
+         so it works behind a DROP-by-default firewall / VPN killswitch. -->
+    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/base.css">
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden select-none bg-[#090d16] text-slate-300">
+
+    <div class="scanline-overlay fixed inset-0 z-40 opacity-40"></div>
+
+    <header class="bg-[#0f172a] border-b border-slate-800 px-4 py-2 flex flex-wrap items-center justify-between text-xs gap-2">
+        <div class="flex items-center space-x-3">
+            <span class="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 font-bold py-0.5 rounded flex items-center gap-1.5 glow-cyan">
+                <i data-lucide="terminal" class="w-3.5 h-3.5"></i> systemd-netmon v{{VERSION}}
+            </span>
+            <span class="text-slate-500">|</span>
+            <span class="text-slate-400 flex items-center gap-1">
+                <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-subtle" id="status-dot"></span>
+                <span id="status-text" class="text-emerald-400 font-medium">LIVE POLLING</span>
+            </span>
+            <span id="mode-badge" class="px-1.5 py-0.5 rounded border text-[10px] font-bold border-slate-700 text-slate-400">…</span>
+            <span class="text-slate-600 hidden md:inline">•</span>
+            <span class="text-slate-400 hidden md:inline">{{OS_LABEL}}</span>
+        </div>
+
+        <div class="flex items-center space-x-3 text-xs">
+            <div class="relative flex items-center">
+                <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2 text-slate-500"></i>
+                <input type="text" id="search-input" placeholder="Filter units... [ / ]"
+                    class="bg-[#182235] text-slate-200 text-xs pl-7 pr-3 py-1 rounded border border-slate-700 focus:outline-none focus:border-cyan-500 w-36 sm:w-48 transition-all">
+            </div>
+
+            <div class="flex items-center gap-1 text-slate-400 bg-slate-800/80 px-2 py-1 rounded border border-slate-700">
+                <i data-lucide="layers" class="w-3.5 h-3.5 text-slate-400"></i>
+                <select id="view-select" class="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                    <option value="active" selected class="bg-slate-900">running</option>
+                    <option value="all" class="bg-slate-900">all services</option>
+                    <option value="accounting" class="bg-slate-900">IPAccounting on</option>
+                </select>
+            </div>
+
+            <button id="btn-pause" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 flex items-center gap-1">
+                <span id="pause-icon-wrap"><i data-lucide="pause" class="w-3.5 h-3.5"></i></span>
+                <span id="pause-text">PAUSE</span>
+            </button>
+
+            <div class="flex items-center gap-1 text-slate-400 bg-slate-800/80 px-2 py-1 rounded border border-slate-700">
+                <i data-lucide="clock" class="w-3.5 h-3.5 text-slate-400"></i>
+                <select id="rate-select" class="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                    <option value="500" class="bg-slate-900">500ms</option>
+                    <option value="1000" selected class="bg-slate-900">1000ms</option>
+                    <option value="2000" class="bg-slate-900">2000ms</option>
+                    <option value="5000" class="bg-slate-900">5000ms</option>
+                </select>
+            </div>
+
+            <button id="btn-drawer" class="px-2.5 py-1 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-400 border border-cyan-700/50 rounded flex items-center gap-1 font-semibold transition-colors">
+                <i data-lucide="code-xml" class="w-3.5 h-3.5"></i>
+                <span>INFO</span>
+            </button>
+        </div>
+    </header>
+
+    <div id="banner" class="hidden bg-amber-950/60 border-b border-amber-800/50 text-amber-300 text-[11px] px-4 py-1"></div>
+
+    <div class="bg-[#0b1329] border-b border-slate-800/80 px-4 py-2 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Systemd Total Ingress</span>
+            <span id="total-ingress" class="text-emerald-400 font-bold text-sm glow-green">0.00 KB/s</span>
+        </div>
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Systemd Total Egress</span>
+            <span id="total-egress" class="text-cyan-400 font-bold text-sm glow-cyan">0.00 KB/s</span>
+        </div>
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Running / Loaded (IPAccounting)</span>
+            <span id="active-units-count" class="text-slate-200 font-bold text-sm">0 / 0</span>
+        </div>
+        <div class="flex flex-col">
+            <span class="text-slate-500 text-[10px] tracking-wider uppercase">Raw / Packet Sockets</span>
+            <span id="raw-sockets-count" class="text-amber-400 font-bold text-sm">0 sockets active</span>
+        </div>
+    </div>
+
+    <main class="flex-1 flex flex-col p-3 gap-3 overflow-hidden">
+        <section class="flex-1 min-h-[50%] bg-[#0f172a]/90 border border-slate-800 rounded-lg flex flex-col overflow-hidden box-glow relative">
+            <div class="bg-slate-900/80 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-xs">
+                <div class="flex items-center gap-2 font-bold text-cyan-400">
+                    <i data-lucide="layers" class="w-4 h-4 text-cyan-400"></i>
+                    <span>SYSTEMD SERVICES (SORTED TOP-DOWN BY THROUGHPUT)</span>
+                </div>
+                <div class="text-[11px] text-slate-500">
+                    Rates need <code class="text-slate-400 bg-slate-800 px-1 py-0.5 rounded">IPAccounting=yes</code>; others show n/a
+                </div>
+            </div>
+
+            <div class="svc-grid bg-slate-900/40 text-[11px] font-semibold text-slate-400 px-3 py-1.5 border-b border-slate-800/60 uppercase">
+                <div>Service Unit Name</div>
+                <div>State</div>
+                <div class="text-right">Throughput</div>
+                <div class="text-right">In / Out Rate</div>
+                <div class="px-3 hide-sm">Sparkline (60 polls)</div>
+                <div class="text-right">Total Data</div>
+                <div class="text-right">Act</div>
+            </div>
+
+            <div id="services-list" class="flex-1 overflow-y-auto font-mono text-xs divide-y divide-slate-800/40"></div>
+        </section>
+
+        <section class="h-48 sm:h-56 bg-[#0f172a]/90 border border-slate-800 rounded-lg flex flex-col overflow-hidden box-glow">
+            <div class="bg-slate-900/80 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-xs">
+                <div class="flex items-center gap-2 font-bold text-amber-400">
+                    <i data-lucide="shield-alert" class="w-4 h-4 text-amber-400"></i>
+                    <span>RAW / PACKET SOCKETS (BYPASS /etc/hosts.deny)</span>
+                </div>
+                <div class="text-[11px] text-slate-400 bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded">
+                    Source: <code class="text-amber-300">/proc/net/raw{,6}</code> &amp; <code class="text-amber-300">/proc/net/packet</code>
+                </div>
+            </div>
+
+            <div class="sock-grid bg-slate-900/40 text-[11px] font-semibold text-slate-400 px-3 py-1.5 border-b border-slate-800/60 uppercase">
+                <div>Inode</div>
+                <div>Process</div>
+                <div class="text-center">PID</div>
+                <div>Protocol / Type</div>
+                <div class="text-right" title="The kernel exposes no per-socket packet counter for raw/packet sockets">Pkts/s</div>
+                <div class="text-right hide-sm" title="raw/raw6: kernel drops counter (cumulative); packet: Rmem bytes">Drops / Rmem</div>
+                <div class="hide-sm">Unit</div>
+                <div class="text-right">Act</div>
+            </div>
+
+            <div id="raw-sockets-list" class="flex-1 overflow-y-auto font-mono text-xs divide-y divide-slate-800/40"></div>
+        </section>
+    </main>
+
+    <footer class="bg-[#0f172a] border-t border-slate-800 px-4 py-1.5 text-[11px] flex flex-wrap justify-between items-center text-slate-400 font-mono">
+        <div class="flex items-center space-x-4">
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">Space</kbd> Pause</span>
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">/</kbd> Filter</span>
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">R</kbd> Reset Stats</span>
+            <span><kbd class="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700">Esc</kbd> Close</span>
+        </div>
+        <div class="text-slate-500">
+            via <span class="text-cyan-400">systemctl</span> → <span class="text-cyan-400">org.freedesktop.systemd1</span>
+        </div>
+    </footer>
+
+    <!-- Floating per-row action menu (single instance so polling re-renders never close it) -->
+    <div id="action-menu" class="hidden fixed z-[55] min-w-[220px] bg-slate-950 border border-slate-700 rounded shadow-2xl text-xs py-1"></div>
+
+    <!-- Confirmation modal -->
+    <div id="modal" class="hidden fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4">
+        <div id="modal-box" class="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-lg shadow-2xl text-xs">
+            <div class="px-4 py-3 border-b border-slate-800 flex items-center gap-2 font-bold text-sm" id="modal-title"></div>
+            <div class="p-4 space-y-3">
+                <div id="modal-target" class="text-slate-300"></div>
+                <div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Exact command</div>
+                    <pre id="modal-cmd" class="bg-slate-950 border border-slate-800 rounded p-2 text-emerald-300 whitespace-pre-wrap break-all select-text"></pre>
+                </div>
+                <label id="modal-now-wrap" class="hidden flex items-center gap-2 text-slate-300">
+                    <input type="checkbox" id="modal-now"> also stop it now (<code>--now</code>)
+                </label>
+                <div id="modal-warn" class="hidden bg-red-950/50 border border-red-800/60 text-red-300 rounded p-2"></div>
+                <div id="modal-force" class="hidden space-y-1">
+                    <div class="text-red-300">Protected target. Type <b id="modal-force-word"></b> to override:</div>
+                    <input id="modal-force-input" type="text" autocomplete="off" class="w-full bg-[#182235] text-slate-200 px-2 py-1 rounded border border-red-700 focus:outline-none">
+                </div>
+                <div id="modal-note" class="text-slate-500"></div>
+            </div>
+            <div class="px-4 py-3 border-t border-slate-800 flex justify-end gap-2">
+                <button id="modal-cancel" class="px-3 py-1 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200">Cancel</button>
+                <button id="modal-ok" class="px-3 py-1 rounded border font-bold">Run</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toasts" class="fixed bottom-10 left-4 z-[70] flex flex-col gap-2 w-96 max-w-[90vw]"></div>
+
+    <div id="dbus-drawer" class="fixed inset-y-0 right-0 w-full max-w-xl bg-slate-900 border-l border-cyan-900/50 shadow-2xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col text-xs">
+        <div class="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+            <div class="flex items-center space-x-2 text-cyan-400 font-bold">
+                <i data-lucide="cpu" class="w-5 h-5"></i>
+                <span class="text-sm">systemd IPAccounting &amp; netmon reference</span>
+            </div>
+            <button id="btn-drawer-close" class="text-slate-400 hover:text-white p-1">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <div class="flex-1 overflow-y-auto p-5 space-y-4 text-slate-300 leading-relaxed select-text">
+            <div>
+                <h3 class="text-sm font-bold text-cyan-400 mb-1">1. Where the numbers come from</h3>
+                <p class="text-xs text-slate-400 mb-2">The backend runs <code class="text-emerald-300">systemctl show -p IPIngressBytes,IPEgressBytes,... UNIT…</code> each poll and divides the counter deltas by elapsed time. Counters exist only for units with <code class="text-emerald-300">IPAccounting=yes</code> (BPF on the unit's cgroup); everything else is shown as <b>n/a</b>, never faked.</p>
+                <div class="bg-slate-950 p-3 rounded border border-slate-800 text-[11px] text-slate-300 overflow-x-auto"><pre><span class="text-slate-500"># enable until reboot (the row menu does this):</span>
+sudo systemctl set-property --runtime UNIT IPAccounting=yes
+<span class="text-slate-500"># permanently (drop-in):</span>
+sudo systemctl set-property UNIT IPAccounting=yes
+<span class="text-slate-500"># or for every service:</span>
+<span class="text-slate-500"># /etc/systemd/system.conf -> DefaultIPAccounting=yes</span></pre></div>
+            </div>
+            <div>
+                <h3 class="text-sm font-bold text-cyan-400 mb-1">2. Actions</h3>
+                <ul class="list-disc pl-5 space-y-1 text-xs text-slate-300">
+                    <li><b>stop / start / restart</b>: runtime only, survives nothing across reboot.</li>
+                    <li><b>kill</b>: <code>systemctl kill --signal=SIGTERM|SIGKILL</code> on every process of the unit. A unit with <code>Restart=</code> may come straight back.</li>
+                    <li><b>disable</b>: not started at boot (can still be pulled in by other units/sockets). <b>mask</b>: links the unit to /dev/null so nothing can start it. Undo with enable / unmask.</li>
+                    <li>Critical units (journald, dbus, logind, udevd, NetworkManager, display manager, polkit, PIA, firewall, ssh during an SSH session, this backend) are refused unless you type the override word.</li>
+                    <li>Every attempt is written to the audit log, including refusals and dry-runs.</li>
+                </ul>
+            </div>
+            <div>
+                <h3 class="text-sm font-bold text-amber-400 mb-1">3. Raw / packet sockets</h3>
+                <p class="text-xs text-slate-400">Daemons like <code class="text-amber-300">NetworkManager</code>, <code class="text-amber-300">dhclient</code>, <code class="text-amber-300">wpa_supplicant</code> or <code class="text-amber-300">tcpdump</code> open AF_PACKET / SOCK_RAW sockets that bypass libwrap (<code>/etc/hosts.deny</code>). The kernel exposes <b>no per-socket packet counters</b> for them, so packet rate is n/a; the drops counter (raw) and Rmem (packet) are real. Socket owners are found by scanning <code>/proc/*/fd</code>, which needs root for other users' processes.</p>
+            </div>
+            <div>
+                <h3 class="text-sm font-bold text-cyan-400 mb-1">4. Denylist (from server)</h3>
+                <div id="denylist" class="text-[11px] text-slate-400"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/icons.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

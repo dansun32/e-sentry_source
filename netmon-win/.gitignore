@@ -1,0 +1,8 @@
+build/
+dist/
+out/
+bin/
+obj/
+__pycache__/
+.pytest_cache/
+helpers/*.exe

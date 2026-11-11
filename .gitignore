@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+*.zip
+*.zip.part*
+*.tgz
+bin/
+obj/
+build/

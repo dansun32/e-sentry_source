@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=systemd-netmon (TUI)
+GenericName=Network service monitor
+Comment=Per-service network accounting and raw sockets, with guarded stop/kill/disable/mask (opens maximised)
+Icon=utilities-terminal
+# Terminal=false: the script opens its own terminal with --maximize (gnome-terminal on Cinnamon),
+# then asks for your sudo password inside that maximised window.
+Exec=/usr/bin/python3 @DIR@/netmon_tui.py --spawn --sudo
+Terminal=false
+Categories=System;Monitor;
+Keywords=systemd;network;firewall;socket;service;
+StartupNotify=false
+Actions=DryRun;ReadOnly;
+
+[Desktop Action DryRun]
+Name=Open (dry-run: actions only logged)
+Exec=/usr/bin/python3 @DIR@/netmon_tui.py --spawn --sudo --dry-run
+
+[Desktop Action ReadOnly]
+Name=Open read-only (no sudo)
+Exec=/usr/bin/python3 @DIR@/netmon_tui.py --spawn --read-only
