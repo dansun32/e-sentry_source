@@ -107,7 +107,11 @@
 
         (async () => {
             const r = await detect();
-            const winHref = 'windows/netmon.html?os=win' + (r.os === 'win' && r.ver ? '&ver=' + r.ver : '');
+            // carry ?helper=PORT (non-default local helper port) through to the dashboard
+            const hp = parseInt(new URLSearchParams(location.search).get('helper'), 10);
+            const helperQ = hp >= 1 && hp <= 65535 ? '&helper=' + hp : '';
+            const winHref = 'windows/netmon.html?os=win' + (r.os === 'win' && r.ver ? '&ver=' + r.ver : '') + helperQ;
+            document.getElementById('link-linux').href = 'linux/systemd-netmon-live/netmon.html?os=linux' + helperQ;
             document.getElementById('link-win').href = winHref;
             document.getElementById('os-label').textContent = r.label.toUpperCase();
             const line = document.getElementById('detect-line');
@@ -122,7 +126,7 @@
                 target = winHref;
                 if (!r.ver) note.textContent = 'This browser does not say whether it is Windows 10 or 11; both are supported.';
             } else if (r.os === 'linux') {
-                target = 'linux/systemd-netmon-live/netmon.html?os=linux';
+                target = 'linux/systemd-netmon-live/netmon.html?os=linux' + helperQ;
                 note.textContent = 'Browsers do not reveal the distro or kernel; the local helper shows them once installed.';
             } else if (r.os === 'mac') {
                 note.textContent = 'macOS is not supported yet. The Windows and Linux versions are below.';

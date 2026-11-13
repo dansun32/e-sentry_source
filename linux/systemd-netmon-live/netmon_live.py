@@ -5,7 +5,7 @@ READ-ONLY: no actions, no POST. Binds 127.0.0.1 only. Python 3 stdlib only.
 
     python3 netmon_live.py          # works without root (other users' socket owners: unknown)
     sudo python3 netmon_live.py     # full inode -> PID mapping
-    open http://127.0.0.1:8787/
+    open https://e-sentry.net/      (the hosted dashboard reads http://127.0.0.1:8787/api/data)
 
 Data sources (parsing ported from systemd-netmon 2.0.0):
   * `systemctl list-units` + `systemctl show -p IPIngressBytes,IPEgressBytes,...` per service
@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import socket
 import struct
 import subprocess
@@ -278,18 +279,34 @@ class Sampler:
             return snap
 
 
+# Origins whose pages may read /api/data cross-origin (the hosted dashboard on GitHub Pages,
+# shown through the e-sentry.net frame). Exact match only; add more with --allow-origin.
+DEFAULT_ALLOWED_ORIGINS = ("https://dansun32.github.io", "https://e-sentry.net", "https://www.e-sentry.net")
+_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(?::\d{1,5})?$")
+_SAFE_REQ_HEADERS = {"accept", "accept-language", "content-language", "cache-control", "pragma"}
+
+
+def check_origin(value: str) -> str:
+    """argparse type for --allow-origin: scheme://host[:port], no path, no wildcard."""
+    v = value.strip().rstrip("/")
+    if not _ORIGIN_RE.match(v):
+        raise argparse.ArgumentTypeError("origin must look like https://example.com[:port] (no path, no '*')")
+    return v.lower()
+
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     sampler: Sampler = None  # type: ignore
     page_path = os.path.join(HERE, "netmon.html")
     server_version = "systemd-netmon-live"
     sys_version = ""
+    allowed_origins = frozenset(DEFAULT_ALLOWED_ORIGINS)
 
     def log_request(self, code="-", size="-"):
         if str(getattr(code, "value", code))[:1] in ("4", "5"):
             super().log_request(code, size)
 
-    def send(self, status, body, ctype):
+    def send(self, status, body, ctype, extra=()):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -297,7 +314,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.end_headers()  # deliberately no Access-Control-* headers
+        for k, v in extra:  # CORS headers, only ever for GET/OPTIONS /api/data from an allowed origin
+            self.send_header(k, v)
+        self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
@@ -305,10 +324,50 @@ class Handler(BaseHTTPRequestHandler):
         port = self.server.server_address[1]
         return self.headers.get("Host", "") in {"127.0.0.1:%d" % port, "localhost:%d" % port}
 
+    def origin_state(self):
+        """('none'|'self'|'allowed'|'denied', origin). Same-origin = the helper's own page."""
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return "none", None
+        port = self.server.server_address[1]
+        if origin in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
+            return "self", origin
+        if origin in self.allowed_origins:
+            return "allowed", origin
+        return "denied", origin
+
+    @staticmethod
+    def cors_headers(origin):
+        return [("Access-Control-Allow-Origin", origin), ("Vary", "Origin")]
+
+    def do_OPTIONS(self):  # CORS preflight, /api/data only, allowed origins only
+        if not self.host_ok():
+            return self.send(421, b'{"error":"bad Host header"}', "application/json")
+        state, origin = self.origin_state()
+        if urlsplit(self.path).path != "/api/data" or state != "allowed":
+            return self.send(403 if state == "denied" else 405, b'{"error":"read-only"}', "application/json",
+                             [("Vary", "Origin")])
+        if self.headers.get("Access-Control-Request-Method", "GET").upper() not in ("GET", "HEAD"):
+            return self.send(403, b'{"error":"read-only"}', "application/json", [("Vary", "Origin")])
+        extra = self.cors_headers(origin) + [("Access-Control-Allow-Methods", "GET"),
+                                             ("Access-Control-Max-Age", "600")]
+        req_h = [h.strip().lower() for h in self.headers.get("Access-Control-Request-Headers", "").split(",") if h.strip()]
+        if req_h:
+            if any(h not in _SAFE_REQ_HEADERS for h in req_h):
+                return self.send(403, b'{"error":"header not allowed"}', "application/json", [("Vary", "Origin")])
+            extra.append(("Access-Control-Allow-Headers", ", ".join(req_h)))
+        # Chrome Private/Local Network Access preflights (public site -> 127.0.0.1)
+        if self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true":
+            extra.append(("Access-Control-Allow-Private-Network", "true"))
+        if self.headers.get("Access-Control-Request-Local-Network", "").lower() == "true":
+            extra.append(("Access-Control-Allow-Local-Network", "true"))
+        return self.send(204, b"", "text/plain", extra)
+
     def do_GET(self):
         if not self.host_ok():  # DNS-rebinding protection
             return self.send(421, b'{"error":"bad Host header"}', "application/json")
         path = urlsplit(self.path).path
+        state, origin = self.origin_state()  # other sites get no CORS headers, so their pages cannot read the reply
         if path == "/favicon.ico":
             return self.send(204, b"", "image/x-icon")
         if path in ("/", "/index.html", "/netmon.html"):
@@ -318,11 +377,12 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self.send(500, b"netmon.html missing next to netmon_live.py", "text/plain")
         if path == "/api/data":
+            extra = self.cors_headers(origin) if state == "allowed" else [("Vary", "Origin")]
             try:
                 data = self.sampler.sample()
             except Exception as e:  # report instead of dropping the connection
                 return self.send(500, json.dumps({"error": "%s: %s" % (type(e).__name__, e)}).encode(), "application/json")
-            return self.send(200, json.dumps(data).encode(), "application/json")
+            return self.send(200, json.dumps(data).encode(), "application/json", extra)
         return self.send(404, b'{"error":"not found"}', "application/json")
 
     do_HEAD = do_GET
@@ -330,11 +390,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # read-only helper
         self.send(405, b'{"error":"read-only"}', "application/json")
 
-    do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_POST
+    do_PUT = do_DELETE = do_PATCH = do_POST  # never CORS
 
 
-def make_server(sampler, port=8787):
-    handler = type("H", (Handler,), {"sampler": sampler})
+def make_server(sampler, port=8787, extra_origins=()):
+    allowed = frozenset(DEFAULT_ALLOWED_ORIGINS) | frozenset(extra_origins)
+    handler = type("H", (Handler,), {"sampler": sampler, "allowed_origins": allowed})
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
     srv.daemon_threads = True
     return srv
@@ -343,17 +404,20 @@ def make_server(sampler, port=8787):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8787, help="port on 127.0.0.1 (default 8787)")
+    ap.add_argument("--allow-origin", action="append", default=[], type=check_origin, metavar="ORIGIN",
+                    help="extra site allowed to read /api/data (repeatable); built in: " + ", ".join(DEFAULT_ALLOWED_ORIGINS))
     ap.add_argument("--interval", type=float, default=0.25,
                     help="minimum seconds between real samples (hint; the page polls at its own 500/1000/2000ms setting)")
     a = ap.parse_args(argv)
     sampler = Sampler(min_interval=a.interval)
-    srv = make_server(sampler, a.port)
+    srv = make_server(sampler, a.port, a.allow_origin)
     if not sampler.have_systemd:
         print("WARNING: systemd is not running as init here; the services list will be empty.", file=sys.stderr)
     if os.geteuid() != 0:
         print("NOTE: not root: owners of other users' raw/packet sockets show as 'unknown' (use sudo for all).",
               file=sys.stderr)
     print("systemd-netmon live (read-only) on http://127.0.0.1:%d/  (Ctrl-C to stop)" % srv.server_address[1], flush=True)
+    print("Live data for the hosted dashboard: open https://e-sentry.net/", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

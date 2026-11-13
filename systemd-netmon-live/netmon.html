@@ -389,17 +389,28 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
         }
 
         // Poll the local read-only helper for real data.
-        // Hosted copies (e-sentry.net / GitHub Pages) have no helper, so they never poll;
-        // locally, failed polls back off (2s, 4s, 8s ... max 30s) instead of retrying every tick.
+        // Hosted (GitHub Pages, shown through e-sentry.net): read the helper on this computer at
+        // http://127.0.0.1:8787/api/data (override the port with ?helper=PORT). The helper only answers
+        // allowed sites (CORS allowlist). Served by the helper itself: same-origin /api/data.
+        // Failed polls back off (2s, 4s, 8s ... max 30s); the page goes live as soon as the helper answers.
         const IS_LOCAL = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
+        const HELPER_PORT = (() => {
+            const p = parseInt(new URLSearchParams(location.search).get('helper'), 10);
+            return p >= 1 && p <= 65535 ? p : 8787;
+        })();
+        const HELPER_URL = IS_LOCAL ? '/api/data' : 'http://127.0.0.1:' + HELPER_PORT + '/api/data';
+        const FETCH_OPTS = IS_LOCAL
+            ? { cache: 'no-store' }
+            // targetAddressSpace: Chrome Local Network Access hint for 127.0.0.1 (other browsers ignore it)
+            : { mode: 'cors', cache: 'no-store', credentials: 'omit', targetAddressSpace: 'loopback' };
         let helperFails = 0, nextTryAt = 0;
+        function retryHelperNow() { nextTryAt = 0; fetchData(); }
         async function fetchData() {
             if (fetchInFlight) return;
-            if (!IS_LOCAL) { setHelperStatus(false, 'hosted copy: no local helper'); return; }
             if (Date.now() < nextTryAt) return;
             fetchInFlight = true;
             try {
-                const r = await fetch('/api/data', { cache: 'no-store' });
+                const r = await fetch(HELPER_URL, FETCH_OPTS);
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 const d = await r.json();
                 helperFails = 0;
@@ -641,7 +652,7 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
             <div class="px-4 py-3 space-y-3">
                 <p id="setup-where" class="text-slate-300 leading-normal"></p>
                 <div id="setup-steps" class="space-y-1.5"></div>
-                <p class="text-slate-500 leading-normal">The live view runs only on your own machine, at <a id="setup-local-link" class="text-cyan-400 underline" href="http://127.0.0.1:8787/">http://127.0.0.1:8787/</a>.</p>
+                <p id="setup-foot" class="text-slate-500 leading-normal"></p>
             </div>
             <div class="flex items-center justify-between px-4 py-2 border-t border-slate-800">
                 <label class="flex items-center gap-2 text-slate-400 cursor-pointer"><input type="checkbox" id="setup-hide" class="accent-emerald-500"> Don't show this again</label>
@@ -654,10 +665,30 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
         // e-sentry: prerequisite and install commands shown in the setup modal
         const SETUP = {
             platform: 'Linux',
-            steps: [
-                { label: '1. Python 3 and Git (Debian / Ubuntu / Mint)', cmd: 'sudo apt install -y python3 git' },
-                { label: '2. Download only the linux folder', cmd: 'git clone --depth 1 --filter=blob:none --sparse https://github.com/dansun32/e-sentry_source\ncd e-sentry_source\ngit sparse-checkout set linux\ncd linux' },
-                { label: '3. Run the live helper, then open http://127.0.0.1:8787/', cmd: 'cd systemd-netmon-live\nsudo python3 netmon_live.py' }
+            groups: [
+                {
+                    "text": "Run these in a terminal:",
+                    "cmds": [
+                        "sudo apt update && sudo apt install -y python3 git",
+                        "git clone --depth 1 --filter=blob:none --sparse https://github.com/dansun32/e-sentry_source",
+                        "cd e-sentry_source",
+                        "git sparse-checkout set linux",
+                        "cd linux/systemd-netmon-live",
+                        "sudo python3 netmon_live.py"
+                    ]
+                },
+                {
+                    "text": "To update later:",
+                    "cmds": [
+                        "cd e-sentry_source && git pull"
+                    ]
+                },
+                {
+                    "note": "These changes to IP accounting will not be persistent: enabling it with systemctl set-property --runtime <unit> IPAccounting=yes only lasts until the next reboot. A unit starts counting only after it restarts, so instead of rebooting you can restart just that service:",
+                    "cmds": [
+                        "sudo systemctl restart <unit>.service"
+                    ]
+                }
             ]
         };
     </script>
@@ -689,27 +720,38 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
             const where = document.getElementById('setup-where');
             document.getElementById('setup-title').textContent = 'SETUP: ' + SETUP.platform.toUpperCase();
             where.textContent = IS_LOCAL
-                ? 'The local helper serves this page. If the status says HELPER UNREACHABLE, start it again with the last command below.'
-                : 'This is the hosted copy (' + location.hostname + '). It has no live data: the dashboard reads your services from a small helper that runs on your own computer. Install it with the commands below, run it, then open http://127.0.0.1:8787/.';
+                ? 'This copy is served by the local helper itself. If the status says HELPER UNREACHABLE, start the helper again.'
+                : 'This page runs here on GitHub. Install the small local helper and it will feed live data into this page.';
+            document.getElementById('setup-foot').textContent = IS_LOCAL
+                ? 'The usual way to view it is the hosted page, https://e-sentry.net/, which reads this helper directly.'
+                : 'Chrome may ask to allow this site to access devices on your local network: click Allow. The helper only listens on 127.0.0.1 (port ' + HELPER_PORT + ') and only answers this site; it is read-only.';
             const box = document.getElementById('setup-steps');
-            SETUP.steps.forEach(s => {
-                const row = document.createElement('div');
-                row.className = 'flex items-center gap-2 bg-[#090d16] border border-slate-800 rounded px-2 py-1';
-                const txt = document.createElement('div');
-                txt.className = 'flex-1 min-w-0';
-                const lab = document.createElement('div');
-                lab.className = 'text-[10px] text-slate-500 uppercase tracking-wider';
-                lab.textContent = s.label;
-                const code = document.createElement('code');
-                code.className = 'block text-emerald-300 whitespace-pre-wrap break-all select-text';
-                code.textContent = s.cmd;
-                txt.append(lab, code);
-                const btn = document.createElement('button');
-                btn.className = 'px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 shrink-0';
-                btn.textContent = 'COPY';
-                btn.onclick = () => copyText(s.cmd, btn);
-                row.append(txt, btn);
-                box.appendChild(row);
+            SETUP.groups.forEach(g => {
+                const head = document.createElement('p');
+                if (g.note) {
+                    head.className = 'text-amber-300/90 leading-normal pt-1';
+                    const b = document.createElement('span');
+                    b.className = 'font-bold';
+                    b.textContent = 'Note: ';
+                    head.append(b, document.createTextNode(g.note));
+                } else {
+                    head.className = 'text-slate-300 leading-normal pt-1';
+                    head.textContent = g.text;
+                }
+                box.appendChild(head);
+                g.cmds.forEach(cmd => {
+                    const row = document.createElement('div');
+                    row.className = 'flex items-center gap-2 bg-[#090d16] border border-slate-800 rounded px-2 py-1';
+                    const code = document.createElement('code');
+                    code.className = 'flex-1 min-w-0 block text-emerald-300 whitespace-pre-wrap break-all select-text';
+                    code.textContent = cmd;
+                    const btn = document.createElement('button');
+                    btn.className = 'px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 shrink-0';
+                    btn.textContent = 'COPY';
+                    btn.onclick = () => copyText(cmd, btn);
+                    row.append(code, btn);
+                    box.appendChild(row);
+                });
             });
             function copyText(text, btn) {
                 const done = ok => { btn.textContent = ok ? 'COPIED' : 'SELECT + CTRL-C'; setTimeout(() => { btn.textContent = 'COPY'; }, 1500); };
@@ -753,12 +795,18 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
                     b = document.createElement('div');
                     b.id = 'nohelper-banner';
                     b.className = 'bg-amber-950/40 border-b border-amber-700/40 text-amber-300 px-4 py-1.5 text-xs flex items-center justify-between gap-2';
-                    b.innerHTML = '<span id="nohelper-text"></span><button onclick="openSetup()" class="px-2 py-0.5 border border-amber-700/50 rounded hover:bg-amber-900/40 shrink-0">HOW TO INSTALL</button>';
+                    b.innerHTML = '<span id="nohelper-text"></span><span class="flex items-center gap-2 shrink-0"><a id="nohelper-direct" target="_blank" rel="noopener" class="hidden px-2 py-0.5 border border-amber-700/50 rounded hover:bg-amber-900/40">OPEN DIRECTLY</a><button onclick="retryHelperNow()" class="px-2 py-0.5 border border-amber-700/50 rounded hover:bg-amber-900/40">RETRY NOW</button><button onclick="openSetup()" class="px-2 py-0.5 border border-amber-700/50 rounded hover:bg-amber-900/40">HOW TO INSTALL</button></span>';
                     document.querySelector('header').insertAdjacentElement('afterend', b);
                 }
+                let framed = false;
+                try { framed = window.top !== window.self; } catch (e) { framed = true; }
                 document.getElementById('nohelper-text').textContent = IS_LOCAL
                     ? 'No local helper: showing an empty view. Retrying in the background' + (msg ? ' (' + msg + ')' : '') + '.'
-                    : 'No local helper: showing an empty view. This hosted copy has no live data; install the helper and open http://127.0.0.1:8787/.';
+                    : 'No local helper found on this computer (127.0.0.1:' + HELPER_PORT + '). Install and start it; this page goes live automatically.'
+                      + (framed ? ' If it is running but nothing appears, open this page directly.' : '');
+                const direct = document.getElementById('nohelper-direct');
+                direct.href = location.href;
+                direct.classList.toggle('hidden', IS_LOCAL || !framed);
                 if (!servicesData.length && helperNote !== 'No local helper: nothing to show yet.') {
                     helperNote = 'No local helper: nothing to show yet.';
                     renderAll();

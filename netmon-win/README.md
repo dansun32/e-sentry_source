@@ -25,20 +25,42 @@ Windows back end. It is **read-only**: nothing is stopped, disabled or changed.
 
 ## Run
 
-From the extracted folder:
+The page is hosted on GitHub at **https://e-sentry.net/**; the helper feeds it live data from
+`http://127.0.0.1:8787/api/data`. Chrome may ask to allow the site to access devices on your local
+network: click **Allow**.
 
-```powershell
-# easiest: asks for elevation (UAC), starts the core, opens the browser
-powershell -ExecutionPolicy Bypass -File .\Start-NetmonWin.ps1
+Run these in PowerShell:
 
-# or by hand from an *Administrator* PowerShell / cmd
-py -3 netmon_win.py            # or: python netmon_win.py   /  .\netmon-win.exe (CI build)
-start http://127.0.0.1:8787/
+```
+winget install -e --id Python.Python.3.12
+winget install -e --id Git.Git
 ```
 
-Options: `--port 8787`, `--interval 1.0` (ETW snapshot period in seconds), `--raw-period 15`
+Close and reopen PowerShell so `python` and `git` are on your PATH, then:
+
+```
+git clone --depth 1 --filter=blob:none --sparse https://github.com/dansun32/e-sentry_source
+cd e-sentry_source
+git sparse-checkout set windows
+cd windows
+Get-FileHash .\helpers\*.exe -Algorithm SHA256
+powershell -ExecutionPolicy Bypass -File .\Start-NetmonWin.ps1
+```
+
+To update later:
+
+```
+cd e-sentry_source; git pull
+```
+
+`Start-NetmonWin.ps1` asks for elevation (UAC), starts the core and opens https://e-sentry.net/
+(`-Local` opens the helper's own copy at http://127.0.0.1:PORT/ instead, `-NoBrowser` opens nothing).
+By hand from an *Administrator* PowerShell: `py -3 netmon_win.py --open` (or `.\netmon-win.exe` from a CI build).
+With a non-default port, open `https://dansun32.github.io/e-sentry_source/?helper=PORT`.
+
+Options: `--allow-origin ORIGIN` (another site allowed to read `/api/data`, repeatable), `--port 8787`, `--interval 1.0` (ETW snapshot period in seconds), `--raw-period 15`
 (seconds between `netmon-raw` runs), `--handles` (enable the optional handle scan), `--no-wfp`,
-`--fallback` (ignore ETW; use sc, tasklist and netstat only), `--open`, `--etw-exe PATH`,
+`--fallback` (ignore ETW; use sc, tasklist and netstat only), `--open` (opens e-sentry.net), `--open-local`, `--etw-exe PATH`,
 `--raw-exe PATH`. Stop it with Ctrl-C. The ETW helper is started with `--exit-on-stdin-eof`, so it
 closes its kernel session when the core exits. If a session is ever left behind, remove it with
 `logman stop netmon-etw -ets`.
@@ -83,8 +105,10 @@ JSON. Typing in the filter box no longer triggers the Space, R or W shortcuts.
 ## Security
 
 * The core serves GET only (other methods get 405) and binds to 127.0.0.1. It returns 421 unless
-  the Host header is `127.0.0.1:PORT` or `localhost:PORT`, to block DNS rebinding. It sends no CORS
-  headers.
+  the Host header is `127.0.0.1:PORT` or `localhost:PORT`, to block DNS rebinding. CORS headers are sent only for
+  `GET /api/data` (and its preflight, including `Access-Control-Allow-Private-Network`) when the
+  Origin is exactly `https://dansun32.github.io`, `https://e-sentry.net`, `https://www.e-sentry.net`
+  or one added with `--allow-origin`. Nothing else is ever shared cross-origin.
 * `netmon-etw --pipe NAME` creates the pipe with a DACL that allows the current user only.
 * No helper modifies anything. The optional handle scan duplicates handles into its own process
   only to read their names (it never closes handles in other processes). Every name query runs on
