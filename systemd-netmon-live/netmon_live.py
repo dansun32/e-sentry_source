@@ -281,7 +281,7 @@ class Sampler:
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     sampler: Sampler = None  # type: ignore
-    page_path = os.path.join(HERE, "index.html")
+    page_path = os.path.join(HERE, "netmon.html")
     server_version = "systemd-netmon-live"
     sys_version = ""
 
@@ -311,12 +311,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/favicon.ico":
             return self.send(204, b"", "image/x-icon")
-        if path in ("/", "/index.html"):
+        if path in ("/", "/index.html", "/netmon.html"):
             try:
                 with open(self.page_path, "rb") as fh:
                     return self.send(200, fh.read(), "text/html; charset=utf-8")
             except OSError:
-                return self.send(500, b"index.html missing next to netmon_live.py", "text/plain")
+                return self.send(500, b"netmon.html missing next to netmon_live.py", "text/plain")
         if path == "/api/data":
             try:
                 data = self.sampler.sample()

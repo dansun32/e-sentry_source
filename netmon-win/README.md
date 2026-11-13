@@ -8,7 +8,7 @@ Windows back end. It is **read-only**: nothing is stopped, disabled or changed.
 |---|---|---|
 | `helpers/netmon-etw.exe` | C# (.NET 8, self-contained single file, win-x64) | Opens a private ETW kernel session (`NetworkTCPIP` + `Process`) and sums TcpIp/UdpIp Send/Recv bytes per PID. Maps each PID to services through the SCM (`EnumServicesStatusEx`, `QueryServiceConfig`). Prints one JSON line per interval (`netmon-etw/1`) on stdout, or on `--pipe NAME`. |
 | `helpers/netmon-raw.exe` | C++17 (CMake; MSVC or mingw-w64) | Reports Npcap/WinPcap install state, processes that loaded `wpcap.dll`/`Packet.dll`, and an optional handle scan. Summarises WFP filters and callouts (`FwpmFilterEnum0` / `FwpmCalloutEnum0`) by provider, layer and action. Prints one JSON object (`netmon-raw/1`). |
-| `netmon_win.py` | Python 3.10+, stdlib only | Runs both helpers, computes rates and serves `index.html` and `/api/data` on **127.0.0.1:8787**. If a helper is missing it falls back to `sc queryex`, `tasklist /svc` and `netstat -ano`. |
+| `netmon_win.py` | Python 3.10+, stdlib only | Runs both helpers, computes rates and serves `netmon.html` and `/api/data` on **127.0.0.1:8787**. If a helper is missing it falls back to `sc queryex`, `tasklist /svc` and `netstat -ano`. |
 
 ## Requirements
 
@@ -113,8 +113,9 @@ detection. Build from source (below) if you prefer, and leave `--handles` off un
     and `tests/fakewin_server.py` for a browser demo.
   * C#: `dotnet test helpers/netmon-etw/tests/NetmonEtw.Tests`.
   * C++: the `ctest` target `netmon-raw-tests`.
-* **Page:** `index.html` is generated from the live page by `page/make_win_page.py`, which only
+* **Page:** `netmon.html` is generated from the live page by `page/make_win_page.py`, which only
   makes exact, checked string replacements. The full change is in `page/index.html.diff`.
+  The OS label, setup modal and no-helper banner were added afterwards by hand (see the repo root `index.html` OS chooser).
 
 ## Test status (honest)
 

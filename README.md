@@ -19,3 +19,4 @@ git sparse-checkout set linux      # or: windows
 - `netmon-win/`: Windows port source, tests, build scripts (`build.ps1`, `build-cross.sh`) and a GitHub Actions workflow.
 - `systemd_network_monitor.html`, `systemd_network_monitor_terminal.html`, `WHAT IS RUNNING`: original mockups.
 - `improvements.md`, `win_port.md`: design notes.
+- `index.html`: OS chooser for the hosted site (forwards to `windows/netmon.html` or `linux/systemd-netmon-live/netmon.html`); `test_index.html`: the previous root page.

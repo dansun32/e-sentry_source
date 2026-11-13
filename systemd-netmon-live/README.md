@@ -67,7 +67,7 @@ data the page inserts as HTML is escaped (process names can contain markup).
 
 ```
 netmon_live.py     helper (stdlib, read-only)
-index.html         the original page with the data script swapped in
+netmon.html        the original page with the data script swapped in, plus the setup modal
 original.html      the untouched original, for reference
 index.html.diff    unified diff original -> live
 tests/             pytest (JSON shape, rates, HTTP rules) + fakehost_server.py demo

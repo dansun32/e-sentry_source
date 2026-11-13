@@ -84,6 +84,10 @@
             </span>
             <span class="text-slate-600 hidden md:inline">•</span>
             <span id="os-label" class="text-slate-400 hidden md:inline">Windows</span>
+            <button onclick="openSetup()" title="Prerequisites and install commands" class="px-2 py-0.5 bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-700/50 rounded flex items-center gap-1 font-semibold transition-colors">
+                <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                <span>SETUP</span>
+            </button>
         </div>
 
         <!-- Controls -->
@@ -389,19 +393,30 @@ session.Source.Process();   <span class="text-slate-500">// needs Administrator<
             renderAll();
         }
 
-        // Poll the local read-only helper for real data
+        // Poll the local read-only helper for real data.
+        // Hosted copies (e-sentry.net / GitHub Pages) have no helper, so they never poll;
+        // locally, failed polls back off (2s, 4s, 8s ... max 30s) instead of retrying every tick.
+        const IS_LOCAL = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
+        let helperFails = 0, nextTryAt = 0;
         async function fetchData() {
             if (fetchInFlight) return;
+            if (!IS_LOCAL) { setHelperStatus(false, 'hosted copy: no local helper'); return; }
+            if (Date.now() < nextTryAt) return;
             fetchInFlight = true;
             try {
                 const r = await fetch('/api/data', { cache: 'no-store' });
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 const d = await r.json();
+                helperFails = 0;
+                nextTryAt = 0;
+                if (window.hideNoHelper) hideNoHelper();
                 if (isPaused) return;  // paused while the request was in flight: keep the frozen view
                 applyData(d);
                 setHelperStatus(true);
                 renderAll();
             } catch (e) {
+                helperFails++;
+                nextTryAt = Date.now() + Math.min(30000, 1000 * Math.pow(2, helperFails));
                 setHelperStatus(false, String(e.message || e));
             } finally {
                 fetchInFlight = false;
@@ -409,7 +424,12 @@ session.Source.Process();   <span class="text-slate-500">// needs Administrator<
         }
 
         function applyData(d) {
-            if (d.os) document.getElementById('os-label').textContent = d.os;
+            if (d.os) {
+                const osl = document.getElementById('os-label');
+                osl.textContent = d.os;
+                osl.title = 'reported by the local helper';
+                osl.dataset.src = 'helper';
+            }
             liveTotals = d.totals || liveTotals;
             liveMode = d.mode || 'etw';
             servicesData = (d.services || []).map(s => {
@@ -459,10 +479,11 @@ session.Source.Process();   <span class="text-slate-500">// needs Administrator<
                 statusText.textContent = full ? 'LIVE ETW POLLING' : (liveMode === 'fallback' ? 'LIVE \u00b7 FALLBACK (NO ETW)' : 'LIVE \u00b7 NO ETW BYTES');
                 statusText.title = helperNote;
             } else {
-                statusDot.className = 'inline-block w-2 h-2 rounded-full bg-red-500';
-                statusText.className = 'text-red-400 font-medium';
-                statusText.textContent = 'HELPER UNREACHABLE';
+                statusDot.className = 'inline-block w-2 h-2 rounded-full ' + (IS_LOCAL ? 'bg-red-500' : 'bg-amber-500');
+                statusText.className = (IS_LOCAL ? 'text-red-400' : 'text-amber-400') + ' font-medium';
+                statusText.textContent = IS_LOCAL ? 'HELPER UNREACHABLE' : 'NO LOCAL HELPER';
                 statusText.title = msg || '';
+                if (window.showNoHelper) showNoHelper(msg);
             }
         }
 
@@ -630,6 +651,148 @@ session.Source.Process();   <span class="text-slate-500">// needs Administrator<
                 drawer.classList.add('translate-x-full');
             }
         }
+    </script>
+
+    <!-- e-sentry: setup / prerequisites modal (reopen with the SETUP button in the header) -->
+    <div id="setup-modal" class="hidden fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4" onclick="if (event.target === this) closeSetup()">
+        <div class="bg-[#0f172a] border border-emerald-500/40 rounded shadow-2xl box-glow w-full max-w-2xl max-h-[90vh] overflow-y-auto text-xs">
+            <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+                <span class="text-emerald-400 font-bold glow-green flex items-center gap-1.5"><i data-lucide="download" class="w-3.5 h-3.5"></i> <span id="setup-title">SETUP</span></span>
+                <button onclick="closeSetup()" class="text-slate-400 hover:text-white p-1" title="Close [Esc]"><i data-lucide="x" class="w-4 h-4"></i></button>
+            </div>
+            <div class="px-4 py-3 space-y-3">
+                <p id="setup-where" class="text-slate-300 leading-normal"></p>
+                <div id="setup-steps" class="space-y-1.5"></div>
+                <p class="text-slate-500 leading-normal">The live view runs only on your own machine, at <a id="setup-local-link" class="text-cyan-400 underline" href="http://127.0.0.1:8787/">http://127.0.0.1:8787/</a>.</p>
+            </div>
+            <div class="flex items-center justify-between px-4 py-2 border-t border-slate-800">
+                <label class="flex items-center gap-2 text-slate-400 cursor-pointer"><input type="checkbox" id="setup-hide" class="accent-emerald-500"> Don't show this again</label>
+                <button onclick="closeSetup()" class="px-3 py-1 bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-700/50 rounded font-semibold">CLOSE</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // e-sentry: prerequisite and install commands shown in the setup modal
+        const SETUP = {
+            platform: 'Windows',
+            steps: [
+                { label: '1. Python 3.12 (Terminal / PowerShell)', cmd: 'winget install -e --id Python.Python.3.12' },
+                { label: '2. Git', cmd: 'winget install -e --id Git.Git' },
+                { label: '3. Download only the windows folder (open a new terminal first)', cmd: 'git clone --depth 1 --filter=blob:none --sparse https://github.com/dansun32/e-sentry_source\ncd e-sentry_source\ngit sparse-checkout set windows\ncd windows' },
+                { label: '4. Run (asks for admin, opens http://127.0.0.1:8787/)', cmd: 'powershell -ExecutionPolicy Bypass -File .\\Start-NetmonWin.ps1' }
+            ]
+        };
+    </script>
+    <script>
+        // e-sentry: dynamic OS label, setup modal and "no local helper" banner
+        (function () {
+            const params = new URLSearchParams(location.search);
+            const label = document.getElementById('os-label');
+            function setLabel(text, how) {
+                if (!text || label.dataset.src === 'helper') return;  // the helper's exact version wins
+                label.textContent = text;
+                label.title = how;
+            }
+            const qos = params.get('os'), qver = params.get('ver');
+            if (qos === 'win') setLabel('Windows' + (qver ? ' ' + qver : ''), 'from the OS chooser');
+            else if (qos === 'linux') setLabel('Linux', 'from the OS chooser');
+            else if (qos === 'mac') setLabel('macOS (unsupported)', 'from the OS chooser');
+            else {
+                const ua = navigator.userAgent;
+                setLabel(/Windows/i.test(ua) ? 'Windows' : /Mac OS X|Macintosh/i.test(ua) ? 'macOS' : /Linux|X11/i.test(ua) ? 'Linux' : '', 'detected by the browser');
+                if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+                    navigator.userAgentData.getHighEntropyValues(['platform', 'platformVersion']).then(h => {
+                        if (h.platform === 'Windows') setLabel('Windows ' + (parseInt(h.platformVersion, 10) >= 13 ? '11' : '10'), 'detected by the browser');
+                    }).catch(() => {});
+                }
+            }
+
+            // Setup modal
+            const where = document.getElementById('setup-where');
+            document.getElementById('setup-title').textContent = 'SETUP: ' + SETUP.platform.toUpperCase();
+            where.textContent = IS_LOCAL
+                ? 'The local helper serves this page. If the status says HELPER UNREACHABLE, start it again with the last command below.'
+                : 'This is the hosted copy (' + location.hostname + '). It has no live data: the dashboard reads your services from a small helper that runs on your own computer. Install it with the commands below, run it, then open http://127.0.0.1:8787/.';
+            const box = document.getElementById('setup-steps');
+            SETUP.steps.forEach(s => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-2 bg-[#090d16] border border-slate-800 rounded px-2 py-1';
+                const txt = document.createElement('div');
+                txt.className = 'flex-1 min-w-0';
+                const lab = document.createElement('div');
+                lab.className = 'text-[10px] text-slate-500 uppercase tracking-wider';
+                lab.textContent = s.label;
+                const code = document.createElement('code');
+                code.className = 'block text-emerald-300 whitespace-pre-wrap break-all select-text';
+                code.textContent = s.cmd;
+                txt.append(lab, code);
+                const btn = document.createElement('button');
+                btn.className = 'px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 shrink-0';
+                btn.textContent = 'COPY';
+                btn.onclick = () => copyText(s.cmd, btn);
+                row.append(txt, btn);
+                box.appendChild(row);
+            });
+            function copyText(text, btn) {
+                const done = ok => { btn.textContent = ok ? 'COPIED' : 'SELECT + CTRL-C'; setTimeout(() => { btn.textContent = 'COPY'; }, 1500); };
+                const fallback = () => {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    let ok = false;
+                    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+                    ta.remove();
+                    done(ok);
+                };
+                if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(() => done(true), fallback);
+                else fallback();
+            }
+            const HIDE_KEY = 'esentry_hide_setup';
+            function hidden() { try { return localStorage.getItem(HIDE_KEY) === '1'; } catch (e) { return false; } }
+            window.openSetup = function () {
+                document.getElementById('setup-hide').checked = hidden();
+                document.getElementById('setup-modal').classList.remove('hidden');
+            };
+            window.closeSetup = function () {
+                try {
+                    if (document.getElementById('setup-hide').checked) localStorage.setItem(HIDE_KEY, '1');
+                    else localStorage.removeItem(HIDE_KEY);
+                } catch (e) { /* storage blocked: just close */ }
+                document.getElementById('setup-modal').classList.add('hidden');
+            };
+            document.addEventListener('keydown', e => {
+                if (e.key === 'Escape' && !document.getElementById('setup-modal').classList.contains('hidden')) closeSetup();
+            });
+            if (!hidden()) openSetup();
+
+            // "No local helper" banner and empty-view note (fetchData calls these)
+            window.showNoHelper = function (msg) {
+                let b = document.getElementById('nohelper-banner');
+                if (!b) {
+                    b = document.createElement('div');
+                    b.id = 'nohelper-banner';
+                    b.className = 'bg-amber-950/40 border-b border-amber-700/40 text-amber-300 px-4 py-1.5 text-xs flex items-center justify-between gap-2';
+                    b.innerHTML = '<span id="nohelper-text"></span><button onclick="openSetup()" class="px-2 py-0.5 border border-amber-700/50 rounded hover:bg-amber-900/40 shrink-0">HOW TO INSTALL</button>';
+                    document.querySelector('header').insertAdjacentElement('afterend', b);
+                }
+                document.getElementById('nohelper-text').textContent = IS_LOCAL
+                    ? 'No local helper: showing an empty view. Retrying in the background' + (msg ? ' (' + msg + ')' : '') + '.'
+                    : 'No local helper: showing an empty view. This hosted copy has no live data; install the helper and open http://127.0.0.1:8787/.';
+                if (!servicesData.length && helperNote !== 'No local helper: nothing to show yet.') {
+                    helperNote = 'No local helper: nothing to show yet.';
+                    renderAll();
+                }
+            };
+            window.hideNoHelper = function () {
+                const b = document.getElementById('nohelper-banner');
+                if (b) b.remove();
+            };
+            createIcons();
+        })();
     </script>
 </body>
 </html>

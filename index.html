@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>e-sentry: What Is Running</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #0b0f19;
+            color: #e2e8f0;
+        }
+        .crt::after {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 99999;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+        .cursor::after { content: "_"; animation: blink 1s steps(1) infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+</head>
+<body class="crt min-h-screen flex flex-col justify-between p-4 select-none">
+
+    <!-- Top Header Bar -->
+    <header class="border border-green-500/40 bg-gray-950/80 p-3 rounded shadow-lg flex justify-between items-center">
+        <div class="flex items-center space-x-3">
+            <span class="inline-block w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
+            <h1 class="text-green-400 font-bold tracking-wider text-lg">E-SENTRY // WHAT IS RUNNING</h1>
+        </div>
+        <div class="text-xs text-green-500/80 flex space-x-4">
+            <span>OS: <span id="os-label" class="text-cyan-400 font-bold">DETECTING</span></span>
+        </div>
+    </header>
+
+    <!-- OS chooser -->
+    <main class="my-3 flex-1 flex flex-col items-center justify-center border border-green-500/30 bg-black/60 rounded p-6 shadow-inner text-center">
+        <p class="text-green-300 font-bold tracking-wide uppercase text-sm mb-2">Network service monitor</p>
+        <p id="detect-line" class="text-2xl text-green-400 font-bold cursor">Detecting your operating system</p>
+        <p id="detect-note" class="text-xs text-gray-400 mt-2 max-w-xl"></p>
+        <p id="forward-line" class="text-sm text-cyan-400 mt-4 min-h-[1.25rem]"></p>
+
+        <div class="mt-6 flex flex-wrap gap-3 justify-center text-sm">
+            <a id="link-win" href="windows/netmon.html?os=win" class="border border-green-500/40 hover:bg-green-500/10 text-green-300 px-4 py-2 rounded">[ WINDOWS 10 / 11 ]</a>
+            <a id="link-linux" href="linux/systemd-netmon-live/netmon.html?os=linux" class="border border-green-500/40 hover:bg-green-500/10 text-green-300 px-4 py-2 rounded">[ LINUX ]</a>
+            <button id="btn-stay" onclick="stayHere()" class="border border-gray-600 hover:bg-gray-800 text-gray-300 px-4 py-2 rounded">[ STAY HERE ]</button>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border border-green-500/30 bg-gray-950 p-2 rounded flex justify-between items-center text-xs">
+        <div class="text-green-400 font-bold">Pick a version above, or wait to be forwarded.</div>
+        <div class="text-gray-500">
+            <a class="hover:text-green-400" href="https://github.com/dansun32/e-sentry_source">github.com/dansun32/e-sentry_source</a>
+        </div>
+    </footer>
+
+    <script>
+        // Detect the OS in the browser, show it, then forward to the matching dashboard.
+        // Browsers only reveal the OS family (and, in Chrome/Edge, the Windows major version).
+        // Distro, kernel and hostname are never exposed to a website; the local helper reports those.
+        const FORWARD_MS = 1500;
+        let timer = null;
+
+        function uaGuess() {
+            const ua = navigator.userAgent;
+            if (/Android|iPhone|iPad|iPod/i.test(ua)) return { os: 'mobile', label: 'Mobile device' };
+            if (/Windows/i.test(ua)) return { os: 'win', ver: '', label: 'Windows' };  // Firefox/Safari: 10 and 11 both say "Windows NT 10.0"
+            if (/Mac OS X|Macintosh/i.test(ua)) return { os: 'mac', label: 'macOS' };
+            if (/Linux|X11|CrOS/i.test(ua)) return { os: 'linux', label: 'Linux' };
+            return { os: 'unknown', label: 'Unknown OS' };
+        }
+
+        async function detect() {
+            let r = uaGuess();
+            const uad = navigator.userAgentData;
+            if (uad && uad.getHighEntropyValues) {
+                try {
+                    const h = await uad.getHighEntropyValues(['platform', 'platformVersion']);
+                    if (h.platform === 'Windows') {
+                        const ver = parseInt(h.platformVersion, 10) >= 13 ? '11' : '10';
+                        r = { os: 'win', ver: ver, label: 'Windows ' + ver };
+                    } else if (h.platform === 'Linux' || h.platform === 'Chrome OS') {
+                        r = { os: 'linux', label: 'Linux' };
+                    } else if (h.platform === 'macOS') {
+                        r = { os: 'mac', label: 'macOS' };
+                    } else if (h.platform === 'Android' || h.platform === 'iOS') {
+                        r = { os: 'mobile', label: 'Mobile device' };
+                    }
+                } catch (e) { /* keep the user-agent guess */ }
+            }
+            return r;
+        }
+
+        function stayHere() {
+            if (timer) clearTimeout(timer);
+            timer = null;
+            document.getElementById('forward-line').textContent = 'Staying here. Pick a version when you are ready.';
+            document.getElementById('btn-stay').classList.add('hidden');
+        }
+
+        (async () => {
+            const r = await detect();
+            const winHref = 'windows/netmon.html?os=win' + (r.os === 'win' && r.ver ? '&ver=' + r.ver : '');
+            document.getElementById('link-win').href = winHref;
+            document.getElementById('os-label').textContent = r.label.toUpperCase();
+            const line = document.getElementById('detect-line');
+            line.classList.remove('cursor');
+            line.textContent = 'Detected: ' + r.label;
+            const note = document.getElementById('detect-note');
+            const fwd = document.getElementById('forward-line');
+            const params = new URLSearchParams(location.search);
+
+            let target = null;
+            if (r.os === 'win') {
+                target = winHref;
+                if (!r.ver) note.textContent = 'This browser does not say whether it is Windows 10 or 11; both are supported.';
+            } else if (r.os === 'linux') {
+                target = 'linux/systemd-netmon-live/netmon.html?os=linux';
+                note.textContent = 'Browsers do not reveal the distro or kernel; the local helper shows them once installed.';
+            } else if (r.os === 'mac') {
+                note.textContent = 'macOS is not supported yet. The Windows and Linux versions are below.';
+            } else {
+                note.textContent = 'Could not match a supported desktop OS. Choose a version below.';
+            }
+            document.getElementById('link-' + (r.os === 'win' ? 'win' : 'linux')).classList.add('bg-green-500/10', 'text-green-200');
+
+            if (target && !params.has('stay')) {
+                fwd.textContent = 'Forwarding to the ' + r.label + ' version...';
+                timer = setTimeout(() => location.replace(target), FORWARD_MS);
+            } else {
+                document.getElementById('btn-stay').classList.add('hidden');
+            }
+        })();
+    </script>
+</body>
+</html>

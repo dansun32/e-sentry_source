@@ -277,7 +277,7 @@ def test_bind_loopback_only():
 
 
 def test_page_keeps_identity_and_is_windows():
-    page = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
+    page = open(os.path.join(ROOT, "netmon.html"), encoding="utf-8").read()
     orig = open(os.path.join(ROOT, "page", "base-live.html"), encoding="utf-8").read()
     cdn = re.compile(r'(?:src|url)\(?["\']?(https://[^"\')]+)')
     assert cdn.findall(page) == cdn.findall(orig)  # same Tailwind / Lucide / Google Fonts links

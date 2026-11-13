@@ -34,11 +34,11 @@ if (-not $SkipTests) {
 if ($Package) {
     Run python @('-m', 'pip', 'install', '--quiet', 'pyinstaller')
     Run python @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--console', '--name', 'netmon-win',
-                 '--add-data', 'index.html;.', '--distpath', 'build/py', '--workpath', 'build/pywork', 'netmon_win.py')
+                 '--add-data', 'netmon.html;.', '--distpath', 'build/py', '--workpath', 'build/pywork', 'netmon_win.py')
     $stage = 'build/stage/netmon-win'
     Remove-Item -Recurse -Force build/stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force "$stage/helpers" | Out-Null
-    Copy-Item build/py/netmon-win.exe, netmon_win.py, index.html, Start-NetmonWin.ps1, README.md $stage
+    Copy-Item build/py/netmon-win.exe, netmon_win.py, netmon.html, Start-NetmonWin.ps1, README.md $stage
     Copy-Item helpers/netmon-etw.exe, helpers/netmon-raw.exe "$stage/helpers"
     Get-ChildItem -Recurse -File $stage | Get-FileHash -Algorithm SHA256 |
         ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Resolve-Path -Relative $_.Path) } | Set-Content "$stage/SHA256SUMS.txt"
