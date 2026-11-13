@@ -404,7 +404,12 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
             // targetAddressSpace: Chrome Local Network Access hint for 127.0.0.1 (other browsers ignore it)
             : { mode: 'cors', cache: 'no-store', credentials: 'omit', targetAddressSpace: 'loopback' };
         let helperFails = 0, nextTryAt = 0;
-        function retryHelperNow() { nextTryAt = 0; fetchData(); }
+        let helperSeen = false;  // true while the last poll reached the helper
+        function retryHelperNow() { nextTryAt = 0; return fetchData(); }
+        // Coming back from the terminal (tab or window regains focus): try the helper at once
+        // instead of waiting out the back-off.
+        document.addEventListener('visibilitychange', () => { if (!document.hidden && !helperSeen) retryHelperNow(); });
+        window.addEventListener('focus', () => { if (!helperSeen) retryHelperNow(); });
         async function fetchData() {
             if (fetchInFlight) return;
             if (Date.now() < nextTryAt) return;
@@ -415,6 +420,7 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
                 const d = await r.json();
                 helperFails = 0;
                 nextTryAt = 0;
+                helperSeen = true;
                 if (window.hideNoHelper) hideNoHelper();
                 if (isPaused) return;  // paused while the request was in flight: keep the frozen view
                 applyData(d);
@@ -422,7 +428,8 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
                 renderAll();
             } catch (e) {
                 helperFails++;
-                nextTryAt = Date.now() + Math.min(30000, 1000 * Math.pow(2, helperFails));
+                helperSeen = false;
+                nextTryAt = Date.now() + Math.min(10000, 1000 * Math.pow(2, helperFails));  // 2s, 4s, 8s, then every 10s
                 setHelperStatus(false, String(e.message || e));
             } finally {
                 fetchInFlight = false;
@@ -674,7 +681,13 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
                         "cd e-sentry_source",
                         "git sparse-checkout set linux",
                         "cd linux/systemd-netmon-live",
-                        "sudo python3 netmon_live.py"
+                        "sudo python3 netmon_live.py --background"
+                    ]
+                },
+                {
+                    "text": "To stop the helper (from linux/systemd-netmon-live):",
+                    "cmds": [
+                        "sudo python3 netmon_live.py --stop"
                     ]
                 },
                 {
@@ -770,8 +783,10 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
                 if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(() => done(true), fallback);
                 else fallback();
             }
-            const HIDE_KEY = 'esentry_hide_setup';
+            const HIDE_KEY = 'esentry_hide_setup';        // "Don't show this again" (persists)
+            const SESSION_KEY = 'esentry_setup_closed';  // CLOSE pressed: no auto pop-up for the rest of this session
             function hidden() { try { return localStorage.getItem(HIDE_KEY) === '1'; } catch (e) { return false; } }
+            function closedThisSession() { try { return sessionStorage.getItem(SESSION_KEY) === '1'; } catch (e) { return false; } }
             window.openSetup = function () {
                 document.getElementById('setup-hide').checked = hidden();
                 document.getElementById('setup-modal').classList.remove('hidden');
@@ -781,12 +796,20 @@ print(<span class="text-emerald-300">f"Ingress: {ingress} bytes | Egress: {egres
                     if (document.getElementById('setup-hide').checked) localStorage.setItem(HIDE_KEY, '1');
                     else localStorage.removeItem(HIDE_KEY);
                 } catch (e) { /* storage blocked: just close */ }
+                try { sessionStorage.setItem(SESSION_KEY, '1'); } catch (e) { /* storage blocked */ }
                 document.getElementById('setup-modal').classList.add('hidden');
+                if (helperSeen) return;  // already live: nothing to pick up
+                // The user has usually just started the helper: poll now, and if there is still no data,
+                // reload this dashboard (same URL and query, not the chooser) so the browser starts fresh
+                // (back-off reset, local network permission asked again).
+                Promise.resolve(retryHelperNow()).finally(() => setTimeout(() => {
+                    if (!helperSeen) location.reload();
+                }, 1200));
             };
             document.addEventListener('keydown', e => {
                 if (e.key === 'Escape' && !document.getElementById('setup-modal').classList.contains('hidden')) closeSetup();
             });
-            if (!hidden()) openSetup();
+            if (!hidden() && !closedThisSession()) openSetup();
 
             // "No local helper" banner and empty-view note (fetchData calls these)
             window.showNoHelper = function (msg) {

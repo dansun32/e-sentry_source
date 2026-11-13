@@ -660,7 +660,13 @@ def main(argv=None):
     ap.add_argument("--fallback", action="store_true", help="ignore the ETW helper (sc/tasklist/netstat only)")
     ap.add_argument("--open", action="store_true", help="open the hosted dashboard (%s) in the default browser" % HOSTED_URL)
     ap.add_argument("--open-local", action="store_true", help="open the copy served by this helper (http://127.0.0.1:PORT/) instead")
+    ap.add_argument("--log-file", help="append all output here (used by Start-NetmonWin.ps1 when the helper runs hidden)")
+    ap.add_argument("--pidfile", help="write this process ID here while running (Start-NetmonWin.ps1 -Stop reads it)")
     a = ap.parse_args(argv)
+    if a.log_file:  # hidden (pythonw / no console): keep a log instead of a window
+        os.makedirs(os.path.dirname(os.path.abspath(a.log_file)), exist_ok=True)
+        sys.stdout = sys.stderr = open(a.log_file, "a", buffering=1, encoding="utf-8", errors="replace")
+        print("---- %s netmon-win starting, PID %d" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid()))
     if not IS_WINDOWS:
         print("WARNING: not Windows; helpers and fallback commands will not work here.", file=sys.stderr)
     etw_exe = None if a.fallback else find_helper("netmon-etw.exe", a.etw_exe)
@@ -671,7 +677,16 @@ def main(argv=None):
         etw.error = "disabled with --fallback"
     raw = RawFeed(raw_cmd, period=max(2.0, a.raw_period))
     sampler = Sampler(etw, raw, FallbackFeed())
-    srv = make_server(sampler, a.port, a.allow_origin)
+    try:
+        srv = make_server(sampler, a.port, a.allow_origin)
+    except OSError as e:
+        print("ERROR: cannot listen on 127.0.0.1:%d: %s (is the helper already running?)" % (a.port, e.strerror or e),
+              file=sys.stderr)
+        return 1
+    if a.pidfile:
+        os.makedirs(os.path.dirname(os.path.abspath(a.pidfile)), exist_ok=True)
+        with open(a.pidfile, "w") as fh:
+            fh.write("%d\n" % os.getpid())
     if not sampler.admin:
         print("NOTE: not elevated: run from an Administrator prompt for ETW bytes and WFP filters.", file=sys.stderr)
     for n, p in (("netmon-etw.exe", etw_exe), ("netmon-raw.exe", raw_exe)):
@@ -692,6 +707,14 @@ def main(argv=None):
         etw.stop()
         raw.stop()
         srv.server_close()
+        if a.pidfile:
+            try:
+                with open(a.pidfile) as fh:
+                    mine = fh.read().strip() == str(os.getpid())
+                if mine:
+                    os.unlink(a.pidfile)
+            except OSError:
+                pass
     return 0
 
 

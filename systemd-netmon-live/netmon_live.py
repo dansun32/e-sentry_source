@@ -7,6 +7,10 @@ READ-ONLY: no actions, no POST. Binds 127.0.0.1 only. Python 3 stdlib only.
     sudo python3 netmon_live.py     # full inode -> PID mapping
     open https://e-sentry.net/      (the hosted dashboard reads http://127.0.0.1:8787/api/data)
 
+    sudo python3 netmon_live.py --background   start, detach, return to the prompt (errors stay on screen)
+    sudo python3 netmon_live.py --status       is it running?
+    sudo python3 netmon_live.py --stop         stop the background helper
+
 Data sources (parsing ported from systemd-netmon 2.0.0):
   * `systemctl list-units` + `systemctl show -p IPIngressBytes,IPEgressBytes,...` per service
     (counters exist only for units with IPAccounting=yes; others are reported as null)
@@ -19,6 +23,7 @@ import json
 import os
 import platform
 import re
+import signal
 import socket
 import struct
 import subprocess
@@ -401,6 +406,135 @@ def make_server(sampler, port=8787, extra_origins=()):
     return srv
 
 
+# ------------------------------------------------------------------ background mode (--background / --stop / --status)
+def default_paths(euid=None):
+    """(pidfile, logfile). Root (sudo): /run + /var/log. Otherwise ~/.cache/e-sentry/."""
+    if (os.geteuid() if euid is None else euid) == 0:
+        return "/run/e-sentry-helper.pid", "/var/log/e-sentry-helper.log"
+    d = os.path.join(os.path.expanduser("~"), ".cache", "e-sentry")
+    return os.path.join(d, "helper.pid"), os.path.join(d, "helper.log")
+
+
+def read_pidfile(path):
+    try:
+        with open(path) as fh:
+            pid = int(fh.read().strip())
+        return pid if pid > 1 else None
+    except (OSError, ValueError):
+        return None
+
+
+def is_our_process(pid, proc=PROC):
+    """True if /proc/PID is a python running netmon_live.py (guards against a stale pidfile / reused PID)."""
+    try:
+        with open(os.path.join(proc, str(pid), "cmdline"), "rb") as fh:
+            args = fh.read().split(b"\0")
+    except OSError:
+        return False
+    return any(os.path.basename(a.decode(errors="replace")) == "netmon_live.py" for a in args)
+
+
+def running_pid(pidfile, proc=PROC):
+    pid = read_pidfile(pidfile)
+    return pid if pid and is_our_process(pid, proc) else None
+
+
+def _open_private(path, flags, mode):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, mode=0o755, exist_ok=True)
+    return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), mode)  # never follow a planted symlink
+
+
+def write_pidfile(path, pid):
+    fd = _open_private(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    with os.fdopen(fd, "w") as fh:
+        fh.write("%d\n" % pid)
+
+
+def remove_pidfile(path, pid):
+    if read_pidfile(path) == pid:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def stop_helper(pidfile, proc=PROC, kill=os.kill, timeout=5.0, sleep=time.sleep):
+    """SIGTERM the background helper. 0 = stopped, 1 = not running, 2 = not allowed / did not stop."""
+    pid = running_pid(pidfile, proc)
+    if pid is None:
+        if read_pidfile(pidfile) is not None:
+            try:
+                os.unlink(pidfile)  # stale
+            except OSError:
+                pass
+        print("e-sentry helper is not running (no live PID in %s)." % pidfile)
+        return 1
+    try:
+        kill(pid, signal.SIGTERM)
+    except PermissionError:
+        print("ERROR: not allowed to stop PID %d; run it with sudo." % pid, file=sys.stderr)
+        return 2
+    except ProcessLookupError:
+        return 1
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if not is_our_process(pid, proc):
+            remove_pidfile(pidfile, pid)
+            print("e-sentry helper stopped (PID %d)." % pid)
+            return 0
+        sleep(0.1)
+    print("ERROR: PID %d did not stop within %.0fs." % (pid, timeout), file=sys.stderr)
+    return 2
+
+
+def daemonize(pidfile, logfile):
+    """Detach (double fork + setsid). Returns None in the daemon. The original process gets back
+    'OK <pid>' or 'ERROR <text>' once the daemon is set up (or '' if it died)."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid > 0:  # original process: wait for the daemon's verdict
+        os.close(w)
+        chunks = []
+        while True:
+            b = os.read(r, 4096)
+            if not b:
+                break
+            chunks.append(b)
+        os.close(r)
+        os.waitpid(pid, 0)
+        return b"".join(chunks).decode(errors="replace")
+    os.close(r)
+    try:
+        os.setsid()
+        if os.fork() > 0:
+            os._exit(0)
+        os.chdir("/")
+        os.umask(0o022)
+        log = _open_private(logfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        write_pidfile(pidfile, os.getpid())
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, 0)
+        os.dup2(log, 1)
+        os.dup2(log, 2)
+        os.close(null)
+        os.close(log)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    except OSError as e:
+        os.write(w, ("ERROR %s" % e).encode())
+        os._exit(1)
+    os.write(w, b"OK %d" % os.getpid())
+    os.close(w)
+    return None
+
+
+def _sigterm(signum, frame):
+    raise SystemExit(0)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8787, help="port on 127.0.0.1 (default 8787)")
@@ -408,22 +542,69 @@ def main(argv=None):
                     help="extra site allowed to read /api/data (repeatable); built in: " + ", ".join(DEFAULT_ALLOWED_ORIGINS))
     ap.add_argument("--interval", type=float, default=0.25,
                     help="minimum seconds between real samples (hint; the page polls at its own 500/1000/2000ms setting)")
+    ap.add_argument("-b", "--background", action="store_true",
+                    help="check everything, then run detached and return to the prompt (log + pidfile, see --log-file)")
+    ap.add_argument("--stop", action="store_true", help="stop the background helper")
+    ap.add_argument("--status", action="store_true", help="say whether the background helper is running")
+    ap.add_argument("--pidfile", help="default: /run/e-sentry-helper.pid as root, else ~/.cache/e-sentry/helper.pid")
+    ap.add_argument("--log-file", help="background log; default: /var/log/e-sentry-helper.log as root, else ~/.cache/e-sentry/helper.log")
     a = ap.parse_args(argv)
+    dpid, dlog = default_paths()
+    pidfile, logfile = a.pidfile or dpid, a.log_file or dlog
+    sudo = "sudo " if os.geteuid() == 0 else ""
+    if a.stop:
+        return stop_helper(pidfile)
+    if a.status:
+        pid = running_pid(pidfile)
+        print("e-sentry helper running in background (PID %d), log %s" % (pid, logfile) if pid
+              else "e-sentry helper is not running in background.")
+        return 0 if pid else 3
+    if a.background:
+        pid = running_pid(pidfile)
+        if pid:
+            print("e-sentry helper already running in background (PID %d) - open https://e-sentry.net/ ; "
+                  "stop with: %spython3 netmon_live.py --stop" % (pid, sudo))
+            return 0
     sampler = Sampler(min_interval=a.interval)
-    srv = make_server(sampler, a.port, a.allow_origin)
+    try:
+        srv = make_server(sampler, a.port, a.allow_origin)
+    except OSError as e:
+        print("ERROR: cannot listen on 127.0.0.1:%d: %s" % (a.port, e.strerror or e), file=sys.stderr)
+        if getattr(e, "errno", None) == 98:
+            print("Is the helper already running? Check with: %spython3 netmon_live.py --status" % sudo, file=sys.stderr)
+        return 1
     if not sampler.have_systemd:
         print("WARNING: systemd is not running as init here; the services list will be empty.", file=sys.stderr)
     if os.geteuid() != 0:
         print("NOTE: not root: owners of other users' raw/packet sockets show as 'unknown' (use sudo for all).",
               file=sys.stderr)
-    print("systemd-netmon live (read-only) on http://127.0.0.1:%d/  (Ctrl-C to stop)" % srv.server_address[1], flush=True)
-    print("Live data for the hosted dashboard: open https://e-sentry.net/", flush=True)
+    if a.background:
+        verdict = daemonize(pidfile, logfile)
+        if verdict is not None:  # original process: report and return to the prompt
+            srv.server_close()
+            if verdict.startswith("OK "):
+                print("e-sentry helper running in background (PID %s) - open https://e-sentry.net/ ; "
+                      "stop with: %spython3 netmon_live.py --stop" % (verdict[3:], sudo))
+                print("Log: %s" % logfile)
+                return 0
+            print("ERROR: background start failed: %s" % (verdict[6:] if verdict.startswith("ERROR ") else "helper exited"),
+                  file=sys.stderr)
+            return 1
+        print("%s systemd-netmon live started in background, PID %d, port %d"
+              % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), srv.server_address[1]), flush=True)
+    else:
+        print("systemd-netmon live (read-only) on http://127.0.0.1:%d/  (Ctrl-C to stop)" % srv.server_address[1], flush=True)
+        print("Live data for the hosted dashboard: open https://e-sentry.net/", flush=True)
+    signal.signal(signal.SIGTERM, _sigterm)
     try:
         srv.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         srv.server_close()
+        if a.background:
+            remove_pidfile(pidfile, os.getpid())
+            print("%s stopped" % time.strftime("%Y-%m-%d %H:%M:%S"), flush=True)
     return 0
 
 

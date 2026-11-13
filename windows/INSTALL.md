@@ -28,10 +28,20 @@ To update later:
 cd e-sentry_source; git pull
 ```
 
-`Start-NetmonWin.ps1` asks for admin (needed for ETW traffic bytes), starts the helper and opens
-https://e-sentry.net/. Options: `-Port N`, `-Handles`, `-NoBrowser`, `-Local` (open the copy the
-helper serves at http://127.0.0.1:PORT/ instead). With a non-default port, open
-`https://dansun32.github.io/e-sentry_source/?helper=PORT`.
+`Start-NetmonWin.ps1` asks for admin (needed for ETW traffic bytes), starts the helper in the
+background with no window, waits until it answers (up to about 10 seconds), opens https://e-sentry.net/
+and closes the admin window. If the helper fails to start, the admin window stays open and shows the
+end of the log until you press Enter. The log is `%LOCALAPPDATA%\e-sentry\helper.log`.
+
+To stop the helper (from the `windows` folder):
+
+```
+powershell -ExecutionPolicy Bypass -File .\Start-NetmonWin.ps1 -Stop
+```
+
+Other options: `-Port N`, `-Handles`, `-NoBrowser`, `-Local` (open the copy the helper serves at
+http://127.0.0.1:PORT/ instead), `-Foreground` (run the helper in a console window, to see errors).
+With a non-default port the launcher opens `https://dansun32.github.io/e-sentry_source/?helper=PORT`.
 
 The helpers in `helpers/` are prebuilt, self-contained 64-bit executables (C# ETW and C++ raw/WFP);
 no .NET or C++ runtime is needed. They are unsigned, so SmartScreen or antivirus may warn: compare

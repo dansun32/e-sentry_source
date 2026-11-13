@@ -16,8 +16,20 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/dansun32/e-se
 cd e-sentry_source
 git sparse-checkout set linux
 cd linux/systemd-netmon-live
-sudo python3 netmon_live.py
+sudo python3 netmon_live.py --background
 ```
+
+`sudo python3 netmon_live.py --background` checks that it can start, then runs in the background and
+returns you to the prompt (`sudo` still asks for your password first). If something is wrong, the error
+stays on screen and nothing is left running. To stop it (from `linux/systemd-netmon-live`):
+
+```
+sudo python3 netmon_live.py --stop
+```
+
+`--status` says whether it is running. The log is `/var/log/e-sentry-helper.log` and the PID file
+`/run/e-sentry-helper.pid` (when run with sudo). Leave out `--background` to run it in the
+terminal instead (Ctrl-C stops it).
 
 To update later:
 
@@ -28,7 +40,7 @@ cd e-sentry_source && git pull
 Without `sudo`, other users' raw/packet socket owners show "unknown". Options: `--port N`
 (default 8787; then open `https://dansun32.github.io/e-sentry_source/?helper=N`), `--interval S`
 (minimum seconds between real samples, default 0.25), `--allow-origin ORIGIN` (another site allowed
-to read `/api/data`, repeatable). The page polls at its own 500/1000/2000 ms setting. The helper also
+to read `/api/data`, repeatable), `-b`/`--background`, `--stop`, `--status`, `--pidfile PATH`, `--log-file PATH`. The page polls at its own 500/1000/2000 ms setting. The helper also
 serves its own copy at http://127.0.0.1:8787/. Ctrl-C stops it.
 
 ## Firewall / CDN

@@ -53,12 +53,24 @@ To update later:
 cd e-sentry_source; git pull
 ```
 
-`Start-NetmonWin.ps1` asks for elevation (UAC), starts the core and opens https://e-sentry.net/
-(`-Local` opens the helper's own copy at http://127.0.0.1:PORT/ instead, `-NoBrowser` opens nothing).
-By hand from an *Administrator* PowerShell: `py -3 netmon_win.py --open` (or `.\netmon-win.exe` from a CI build).
-With a non-default port, open `https://dansun32.github.io/e-sentry_source/?helper=PORT`.
+`Start-NetmonWin.ps1` asks for admin (needed for ETW traffic bytes), starts the helper in the
+background with no window, waits until it answers (up to about 10 seconds), opens https://e-sentry.net/
+and closes the admin window. If the helper fails to start, the admin window stays open and shows the
+end of the log until you press Enter. The log is `%LOCALAPPDATA%\e-sentry\helper.log`.
 
-Options: `--allow-origin ORIGIN` (another site allowed to read `/api/data`, repeatable), `--port 8787`, `--interval 1.0` (ETW snapshot period in seconds), `--raw-period 15`
+To stop the helper (from the `windows` folder):
+
+```
+powershell -ExecutionPolicy Bypass -File .\Start-NetmonWin.ps1 -Stop
+```
+
+Other options: `-Port N`, `-Handles`, `-NoBrowser`, `-Local` (open the copy the helper serves at
+http://127.0.0.1:PORT/ instead), `-Foreground` (run the helper in a console window, to see errors).
+With a non-default port the launcher opens `https://dansun32.github.io/e-sentry_source/?helper=PORT`.
+
+By hand from an *Administrator* PowerShell: `py -3 netmon_win.py --open` (or `.\netmon-win.exe` from a CI build).
+
+Options: `--allow-origin ORIGIN` (another site allowed to read `/api/data`, repeatable), `--log-file PATH` and `--pidfile PATH` (used by the launcher for the hidden helper), `--port 8787`, `--interval 1.0` (ETW snapshot period in seconds), `--raw-period 15`
 (seconds between `netmon-raw` runs), `--handles` (enable the optional handle scan), `--no-wfp`,
 `--fallback` (ignore ETW; use sc, tasklist and netstat only), `--open` (opens e-sentry.net), `--open-local`, `--etw-exe PATH`,
 `--raw-exe PATH`. Stop it with Ctrl-C. The ETW helper is started with `--exit-on-stdin-eof`, so it

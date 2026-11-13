@@ -10,8 +10,20 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/dansun32/e-se
 cd e-sentry_source
 git sparse-checkout set linux
 cd linux/systemd-netmon-live
-sudo python3 netmon_live.py
+sudo python3 netmon_live.py --background
 ```
+
+`sudo python3 netmon_live.py --background` checks that it can start, then runs in the background and
+returns you to the prompt (`sudo` still asks for your password first). If something is wrong, the error
+stays on screen and nothing is left running. To stop it (from `linux/systemd-netmon-live`):
+
+```
+sudo python3 netmon_live.py --stop
+```
+
+`--status` says whether it is running. The log is `/var/log/e-sentry-helper.log` and the PID file
+`/run/e-sentry-helper.pid` (when run with sudo). Leave out `--background` to run it in the
+terminal instead (Ctrl-C stops it).
 
 To update later:
 
@@ -39,7 +51,7 @@ https://dansun32.github.io, https://e-sentry.net and https://www.e-sentry.net (a
 
 | Folder | What it is | Run |
 |---|---|---|
-| `systemd-netmon-live/` | Live data helper for the hosted dashboard, read-only | `sudo python3 netmon_live.py` |
+| `systemd-netmon-live/` | Live data helper for the hosted dashboard, read-only | `sudo python3 netmon_live.py --background` (stop: `--stop`) |
 | `systemd-netmon/` | Web app with stop/kill/disable/mask actions (runs locally) | `sudo python3 netmon.py --dry-run` (drop `--dry-run` for live actions); open the URL it prints |
 | `systemd-netmon-tui/` | Terminal-only, self-maximising | `python3 netmon_tui.py --sudo` |
 

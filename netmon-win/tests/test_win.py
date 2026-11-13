@@ -389,3 +389,45 @@ def test_allow_origin_rejects_bad_values(bad):
     with pytest.raises(Exception):
         MOD.check_origin(bad)
     assert MOD.check_origin("https://Mirror.example:8443/") == "https://mirror.example:8443"
+
+
+# ------------------------------------------------------------------ --log-file / --pidfile (hidden start)
+import signal, socket, subprocess, time as _time
+
+SCRIPT = os.path.join(ROOT, "netmon_win.py")
+
+
+def test_log_file_and_pidfile(tmp_path):
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    lf, pf = str(tmp_path / "e-sentry" / "helper.log"), str(tmp_path / "e-sentry" / "helper.pid")
+    p = subprocess.Popen([sys.executable, SCRIPT, "--fallback", "--port", str(port), "--log-file", lf, "--pidfile", pf],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for _ in range(50):
+            try:
+                st = req(port, path="/api/data")[0]
+                break
+            except OSError:
+                _time.sleep(0.1)
+        assert st == 200
+        assert open(pf).read().strip() == str(p.pid)
+    finally:
+        p.send_signal(signal.SIGINT)
+        out, err = p.communicate(timeout=10)
+    assert out == b"" and err == b""  # everything went to the log
+    log = open(lf).read()
+    assert "netmon-win starting, PID %d" % p.pid in log and "netmon-win (read-only) on" in log
+    assert not os.path.exists(pf)  # removed on exit
+
+
+def test_bind_failure_is_logged(tmp_path):
+    blocker = socket.socket(); blocker.bind(("127.0.0.1", 0)); blocker.listen(1)
+    port = blocker.getsockname()[1]
+    lf, pf = str(tmp_path / "helper.log"), str(tmp_path / "helper.pid")
+    try:
+        r = subprocess.run([sys.executable, SCRIPT, "--fallback", "--port", str(port), "--log-file", lf, "--pidfile", pf],
+                           capture_output=True, timeout=20)
+    finally:
+        blocker.close()
+    assert r.returncode == 1 and "ERROR: cannot listen on 127.0.0.1:%d" % port in open(lf).read()
+    assert not os.path.exists(pf)

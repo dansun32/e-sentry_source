@@ -203,3 +203,112 @@ def test_allow_origin_rejects_bad_values(bad):
     with pytest.raises(Exception):
         MOD.check_origin(bad)
     assert MOD.check_origin("https://Mirror.example:8443/") == "https://mirror.example:8443"
+
+
+# ------------------------------------------------------------------ --background / --stop / --status
+import signal, socket, subprocess
+
+SCRIPT = os.path.join(os.path.dirname(HERE), "netmon_live.py")
+
+
+def _free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def _fake_proc_cmdline(tmp_path, pid, args):
+    d = tmp_path / "proc" / str(pid)
+    d.mkdir(parents=True)
+    (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in args) + b"\0")
+    return str(tmp_path / "proc")
+
+
+def test_pidfile_and_process_check(tmp_path):
+    proc = _fake_proc_cmdline(tmp_path, 4242, ["python3", "/x/netmon_live.py", "--background"])
+    _fake_proc_cmdline(tmp_path, 4343, ["python3", "/x/other.py"])
+    pf = str(tmp_path / "run" / "h.pid")
+    assert nl.read_pidfile(pf) is None
+    nl.write_pidfile(pf, 4242)
+    assert nl.read_pidfile(pf) == 4242 and nl.running_pid(pf, proc) == 4242
+    nl.write_pidfile(pf, 4343)  # PID reused by something else: not ours
+    assert nl.running_pid(pf, proc) is None
+    open(pf, "w").write("garbage")
+    assert nl.read_pidfile(pf) is None
+    os.unlink(pf)
+    os.symlink(str(tmp_path / "target"), pf)  # planted symlink is never followed
+    with pytest.raises(OSError):
+        nl.write_pidfile(pf, 4242)
+    assert not (tmp_path / "target").exists()
+    p_user, l_user = nl.default_paths(euid=1000)
+    assert p_user.endswith("/.cache/e-sentry/helper.pid") and l_user.endswith("/.cache/e-sentry/helper.log")
+    assert nl.default_paths(euid=0) == ("/run/e-sentry-helper.pid", "/var/log/e-sentry-helper.log")
+
+
+def test_stop_helper_logic(tmp_path, capsys):
+    proc = _fake_proc_cmdline(tmp_path, 4242, ["python3", "netmon_live.py"])
+    pf = str(tmp_path / "h.pid")
+    assert nl.stop_helper(pf, proc) == 1  # no pidfile
+    nl.write_pidfile(pf, 4242)
+    sent = []
+
+    def kill(pid, sig):  # the "process" exits when signalled
+        sent.append((pid, sig))
+        os.unlink(os.path.join(proc, "4242", "cmdline"))
+    assert nl.stop_helper(pf, proc, kill=kill, sleep=lambda s: None) == 0
+    assert sent == [(4242, signal.SIGTERM)] and not os.path.exists(pf)
+    nl.write_pidfile(pf, 9999)  # stale pidfile: removed, nothing signalled
+    assert nl.stop_helper(pf, proc, kill=kill) == 1 and not os.path.exists(pf)
+    _fake_proc_cmdline(tmp_path, 5151, ["python3", "netmon_live.py"])
+    nl.write_pidfile(pf, 5151)
+
+    def denied(pid, sig):
+        raise PermissionError
+    assert nl.stop_helper(pf, proc, kill=denied) == 2
+    assert "sudo" in capsys.readouterr().err
+
+
+def test_background_start_status_stop(tmp_path):
+    port = _free_port()
+    pf, lf = str(tmp_path / "h.pid"), str(tmp_path / "h.log")
+    common = ["--pidfile", pf, "--log-file", lf]
+    r = subprocess.run([sys.executable, SCRIPT, "--background", "--port", str(port)] + common,
+                       capture_output=True, text=True, timeout=20)
+    try:
+        assert r.returncode == 0, r.stderr
+        assert "running in background (PID" in r.stdout and "https://e-sentry.net/" in r.stdout and "--stop" in r.stdout
+        pid = nl.read_pidfile(pf)
+        assert pid and nl.is_our_process(pid)
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/api/data", headers={"Host": "127.0.0.1:%d" % port, "Origin": "https://e-sentry.net"})
+        resp = c.getresponse()
+        assert resp.status == 200 and resp.getheader("Access-Control-Allow-Origin") == "https://e-sentry.net"
+        s = subprocess.run([sys.executable, SCRIPT, "--status"] + common, capture_output=True, text=True, timeout=10)
+        assert s.returncode == 0 and str(pid) in s.stdout
+        again = subprocess.run([sys.executable, SCRIPT, "--background", "--port", str(port)] + common,
+                               capture_output=True, text=True, timeout=10)
+        assert again.returncode == 0 and "already running" in again.stdout
+    finally:
+        st = subprocess.run([sys.executable, SCRIPT, "--stop"] + common, capture_output=True, text=True, timeout=10)
+    assert st.returncode == 0 and "stopped" in st.stdout
+    assert not os.path.exists(pf)
+    assert "started in background" in open(lf).read()
+    s = subprocess.run([sys.executable, SCRIPT, "--status"] + common, capture_output=True, text=True, timeout=10)
+    assert s.returncode == 3
+
+
+def test_background_failure_stays_in_terminal(tmp_path):
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    pf = str(tmp_path / "h.pid")
+    try:
+        r = subprocess.run([sys.executable, SCRIPT, "--background", "--port", str(port), "--pidfile", pf,
+                            "--log-file", str(tmp_path / "h.log")], capture_output=True, text=True, timeout=10)
+    finally:
+        blocker.close()
+    assert r.returncode == 1 and "ERROR: cannot listen on 127.0.0.1:%d" % port in r.stderr
+    assert not os.path.exists(pf)
