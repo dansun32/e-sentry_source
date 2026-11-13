@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linux Mint Systemd & Raw Socket Network Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #0b0f19;
+            color: #e2e8f0;
+        }
+        .crt::after {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 99999;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="crt h-screen flex flex-col justify-between p-4 overflow-hidden select-none">
+
+    <!-- Top Header Bar -->
+    <header class="border border-green-500/40 bg-gray-950/80 p-3 rounded shadow-lg flex justify-between items-center">
+        <div class="flex items-center space-x-3">
+            <span class="inline-block w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
+            <h1 class="text-green-400 font-bold tracking-wider text-lg">LINUX MINT NETWORK TUI [btop-engine]</h1>
+        </div>
+        <div class="text-xs text-green-500/80 flex space-x-4">
+            <span>HOST: mint-desktop</span>
+            <span>KERNEL: 6.8.0-generic</span>
+            <span>STATUS: <span id="status-label" class="text-cyan-400 font-bold">RUNNING</span></span>
+        </div>
+    </header>
+
+    <!-- Main Dynamic Display View -->
+    <main class="my-3 flex-1 flex flex-col border border-green-500/30 bg-black/60 rounded p-4 overflow-hidden shadow-inner">
+        <div class="flex justify-between items-center pb-2 mb-2 border-b border-green-500/20">
+            <h2 id="view-title" class="text-green-300 font-bold tracking-wide uppercase text-sm">SYSTEMD NETWORK SERVICES (IPAccounting)</h2>
+            <div class="text-xs text-gray-400">Sorted Top-Down by Throughput</div>
+        </div>
+
+        <!-- Scrollable Service / Raw Socket Rows Container -->
+        <div id="main-service-list" class="flex-1 overflow-y-auto space-y-1 pr-2">
+            <!-- Dynamically populated rows -->
+        </div>
+    </main>
+
+    <!-- Bottom Secondary Info / Raw Socket Preview Pane -->
+    <section class="h-36 border border-cyan-500/30 bg-gray-950/80 rounded p-3 flex flex-col justify-between">
+        <div class="flex justify-between items-center text-xs text-cyan-400 border-b border-cyan-500/20 pb-1">
+            <span class="font-bold">KERNEL /PROC/NET/RAW SENSOR FEED</span>
+            <span>BYPASSING /ETC/HOSTS.DENY</span>
+        </div>
+        <div id="raw-preview-list" class="overflow-y-auto text-xs space-y-1 font-mono text-gray-300">
+            <!-- Raw Sockets Preview Items -->
+        </div>
+    </section>
+
+    <!-- Footer Controls & Hotkey Hint -->
+    <footer class="mt-3 border border-green-500/30 bg-gray-950 p-2 rounded flex justify-between items-center text-xs">
+        <div class="text-green-400 font-bold" id="footer-hotkey-hint">
+            Press [R] to see alternate Raw/Systemd services.
+        </div>
+        <div class="flex space-x-4 text-gray-400">
+            <span>[Space]: Pause</span>
+            <span>[R]: Toggle View</span>
+            <span>[Q]: Quit</span>
+        </div>
+    </footer>
+
+    <script>
+        // State management
+        const state = {
+            viewMode: 'systemd', // 'systemd' or 'raw'
+            isPaused: false,
+            services: [
+                { name: 'systemd-networkd.service', baseBytes: 450000, currentKbps: 0 },
+                { name: 'systemd-resolved.service', baseBytes: 120000, currentKbps: 0 },
+                { name: 'ssh.service', baseBytes: 15000, currentKbps: 0 },
+                { name: 'nginx.service', baseBytes: 890000, currentKbps: 0 },
+                { name: 'NetworkManager.service', baseBytes: 310000, currentKbps: 0 },
+                { name: 'avahi-daemon.service', baseBytes: 8000, currentKbps: 0 },
+                { name: 'cups.service', baseBytes: 2000, currentKbps: 0 }
+            ],
+            rawSockets: [
+                { name: 'Raw Socket: 00000000:0003 -> PID 412 (dhclient)', currentKbps: 14.2, packets: 1240 },
+                { name: 'Raw Socket: 00000000:0038 -> PID 689 (wpa_supplicant)', currentKbps: 8.5, packets: 890 },
+                { name: 'Raw Socket: 00000000:000A -> PID 1024 (tcpdump)', currentKbps: 45.0, packets: 4210 },
+                { name: 'Raw Socket: 00000000:00FF -> PID 311 (dhcpcd)', currentKbps: 2.1, packets: 310 }
+            ]
+        };
+
+        // Keyboard event listener for hotkeys
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                state.viewMode = state.viewMode === 'systemd' ? 'raw' : 'systemd';
+                render();
+            } else if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault();
+                state.isPaused = !state.isPaused;
+                document.getElementById('status-label').textContent = state.isPaused ? 'PAUSED' : 'RUNNING';
+                document.getElementById('status-label').className = state.isPaused ? 'text-yellow-400 font-bold' : 'text-cyan-400 font-bold';
+            }
+        });
+
+        // Simulate traffic fluctuation and compute KBPS
+        function updateData() {
+            if (state.isPaused) return;
+
+            // Update systemd services KBPS
+            state.services.forEach(svc => {
+                const delta = Math.floor(Math.random() * 25000) + 1000;
+                svc.currentKbps = parseFloat((delta / 1024).toFixed(2));
+            });
+
+            // Update raw sockets KBPS
+            state.rawSockets.forEach(sock => {
+                const delta = Math.floor(Math.random() * 15000) + 500;
+                sock.currentKbps = parseFloat((delta / 1024).toFixed(2));
+            });
+
+            render();
+        }
+
+        // Render UI
+        function render() {
+            const titleEl = document.getElementById('view-title');
+            const listEl = document.getElementById('main-service-list');
+            const rawPreviewEl = document.getElementById('raw-preview-list');
+
+            // Footer hint
+            document.getElementById('footer-hotkey-hint').textContent = "Press [R] to see alternate Raw/Systemd services.";
+
+            let dataset = [];
+            if (state.viewMode === 'systemd') {
+                titleEl.textContent = "SYSTEMD NETWORK SERVICES (IPAccounting via org.freedesktop.systemd1)";
+                dataset = [...state.services].sort((a, b) => b.currentKbps - a.currentKbps);
+                
+                listEl.innerHTML = dataset.map(item => `
+                    <div class="flex justify-between items-center py-1.5 px-3 border border-gray-800/60 rounded bg-gray-900/40 hover:bg-gray-900 font-mono text-sm">
+                        <span class="text-green-400 font-semibold flex items-center space-x-2">
+                            <span class="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
+                            <span>${item.name}</span>
+                        </span>
+                        <span class="text-cyan-400 font-bold tracking-wider">[${item.currentKbps.toFixed(2)} KBPS]</span>
+                    </div>
+                `).join('');
+            } else {
+                titleEl.textContent = "RAW SOCKET PROCESSES (/proc/net/raw & D-Bus mapping)";
+                dataset = [...state.rawSockets].sort((a, b) => b.currentKbps - a.currentKbps);
+                
+                listEl.innerHTML = dataset.map(item => `
+                    <div class="flex justify-between items-center py-1.5 px-3 border border-cyan-900/60 rounded bg-gray-900/40 hover:bg-gray-900 font-mono text-sm">
+                        <span class="text-cyan-300 font-semibold flex items-center space-x-2">
+                            <span class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></span>
+                            <span>${item.name}</span>
+                        </span>
+                        <span class="text-green-400 font-bold tracking-wider">[${item.currentKbps.toFixed(2)} KBPS]</span>
+                    </div>
+                `).join('');
+            }
+
+            // Bottom raw preview
+            rawPreviewEl.innerHTML = state.rawSockets.map(sock => `
+                <div class="flex justify-between text-gray-400 border-b border-gray-900 py-0.5">
+                    <span>${sock.name}</span>
+                    <span class="text-cyan-300">${sock.packets} pkts | [${sock.currentKbps.toFixed(2)} KBPS]</span>
+                </div>
+            `).join('');
+        }
+
+        // Initial render & loop
+        render();
+        setInterval(updateData, 1000);
+    </script>
+</body>
+</html>
